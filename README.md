@@ -37,6 +37,8 @@ await start()
 await stop()
 ```
 
+AWS Credentials are taken from the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables.
+
 
 ## Under the hood and limitations
 
