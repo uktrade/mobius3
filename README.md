@@ -29,7 +29,8 @@ from mobius3 import Syncer
 
 start, stop = Syncer('/local/folder', 'https://remote-bucket.s3-eu-west-2.amazonaws.com/path/in/bucket')
 
-# Will copy the contents of the bucket to the local folder, raise exceptions on error, and then continue to sync in the background
+# Will copy the contents of the bucket to the local folder,
+# raise exceptions on error, and then continue to sync in the background
 await start()
 
 # Will stop syncing
