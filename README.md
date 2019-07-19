@@ -6,6 +6,7 @@ Continuously and asynchronously sync a local folder to an S3 bucket. This is a P
 - high performance local access is more important than synchronous saving to S3;
 - there are infrequent concurrent modifications to the same file from different clients;
 - local files can be changed by any program;
+- there are at most ~10k files to sync;
 - changes in the S3 bucket may be performed directly i.e. not using mobius3.
 
 These properties make mobius3 similar to a Dropbox or Google Drive client. Under the hood, [inotify](http://man7.org/linux/man-pages/man7/inotify.7.html) is used and so only Linux is supported.
