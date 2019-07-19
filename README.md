@@ -1,4 +1,4 @@
-# mobius3
+# mobius3 [![CircleCI](https://circleci.com/gh/uktrade/mobius3.svg?style=svg)](https://circleci.com/gh/uktrade/mobius3)
 
 Continuously and asynchronously sync a local folder to an S3 bucket. This is a Python application, suitable for situations where
 
