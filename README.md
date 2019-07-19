@@ -43,6 +43,6 @@ Renaming files or folders map to no atomic operation in S3, and conflicts are de
 
 A simple polling mechanism is used to check for changes in S3: hence for large number of files/objects mobius3 may not be performant.
 
-However, every effort is made so that contents of each file is not corrupted, i.e. files mid-way through being changed locally are _not_ uploaded until they stop being changed.
+However, every effort is made so that content of each file is not corrupted, i.e. files mid-way through being changed locally are _not_ uploaded until they stop being changed.
 
 Some of the above behaviours may change in future versions.
