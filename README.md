@@ -53,5 +53,5 @@ Some of the above behaviours may change in future versions.
 
 ```bash
 docker-compose build && \
-docker-compose run test python3 setup.py test
+docker-compose run --rm test python3 setup.py test
 ```
