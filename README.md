@@ -16,7 +16,7 @@ These properties make mobius3 similar to a Dropbox or Google Drive client. Under
 
 ## Usage
 
-mobuis3 can be used a standalone command-line application
+mobius3 can be used a standalone command-line application
 
 ```bash
 mobius3 /local/folder https://remote-bucket.s3-eu-west-2.amazonaws.com/path/in/bucket
