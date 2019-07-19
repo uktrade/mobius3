@@ -9,4 +9,4 @@ RUN \
 	apk add --no-cache \
 		python3
 
-COPY . /
+COPY LICENSE README.md mobius3.py setup.py test.py /
