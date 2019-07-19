@@ -16,6 +16,22 @@ These properties make mobius3 similar to a Dropbox or Google Drive client. Under
 
 ## Usage
 
+mobuis3 can be used a standalone command-line application
+
 ```bash
 mobius3 /local/folder https://remote-bucket.s3-eu-west-2.amazonaws.com/path/in/bucket
+```
+
+or from asyncio Python
+
+```python
+from mobius3 import Syncer
+
+start, stop = Syncer('/local/folder', 'https://remote-bucket.s3-eu-west-2.amazonaws.com/path/in/bucket')
+
+# Will raise exceptions on error, and continue to sync in the background
+await start()
+
+# Will stop syncing
+await stop()
 ```
