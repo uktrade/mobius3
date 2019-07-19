@@ -52,6 +52,6 @@ Some of the above behaviours may change in future versions.
 ## Running tests
 
 ```bash
-docker build . -f Dockerfile-test -t mobius3-test && \
-docker run --rm mobius3-test python3 setup.py test
+docker-compose build && \
+docker-compose run test python3 setup.py test
 ```

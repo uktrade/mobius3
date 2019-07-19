@@ -1,0 +1,14 @@
+version: "3"
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile-test
+    links:
+      - "minio"
+  minio:
+    build:
+      context: .
+      dockerfile: Dockerfile-minio
+    ports:
+      - "9000:9000"

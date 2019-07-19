@@ -1,0 +1,12 @@
+FROM minio/minio:RELEASE.2018-11-22T02-51-56Z
+
+RUN \
+	apk add --no-cache \
+		openssl
+
+RUN \
+	mkdir -p /test-data/my-bucket
+COPY minio-entrypoint.sh /
+
+ENTRYPOINT ["/minio-entrypoint.sh"]
+CMD ["server", "/test-data"]
