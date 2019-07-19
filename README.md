@@ -47,3 +47,11 @@ A simple polling mechanism is used to check for changes in S3: hence for large n
 However, every effort is made so that content of each file is not corrupted, i.e. files mid-way through being changed locally are _not_ uploaded until they stop being changed.
 
 Some of the above behaviours may change in future versions.
+
+
+## Running tests
+
+```bash
+docker build . -f Dockerfile-test -t mobius3-test && \
+docker run --rm mobius3-test python3 setup.py test
+```

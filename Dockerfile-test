@@ -1,0 +1,12 @@
+FROM alpine:3.10
+
+ENV \
+	LC_ALL=en_US.UTF-8 \
+	LANG=en_US.UTF-8 \
+	LANGUAGE=en_US.UTF-8
+
+RUN \
+	apk add --no-cache \
+		python3
+
+COPY . /

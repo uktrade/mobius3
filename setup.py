@@ -19,4 +19,8 @@ setuptools.setup(
         'Programming Language :: Python :: 3',
         'License :: OSI Approved :: MIT License',
     ],
+    py_modules=[
+        'mobius3',
+    ],
+    test_suite='test',
 )
