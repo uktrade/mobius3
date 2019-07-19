@@ -1,2 +1,8 @@
 def Syncer():
-    pass
+    async def start():
+        pass
+
+    async def stop():
+        pass
+
+    return start, stop
