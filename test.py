@@ -19,3 +19,7 @@ class TestIntegration(unittest.TestCase):
     @async_test
     async def test_dummy(self):
         self.assertTrue(Syncer)
+
+        start, stop = Syncer()
+        await start()
+        await stop()
