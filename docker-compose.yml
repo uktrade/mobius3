@@ -6,9 +6,16 @@ services:
       dockerfile: Dockerfile-test
     links:
       - "minio"
+    environment:
+      - AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+      - AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
   minio:
     build:
       context: .
       dockerfile: Dockerfile-minio
+    environment:
+      - MINIO_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE
+      - MINIO_SECRET_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+      - MINIO_REGION=us-east-1
     ports:
       - "9000:9000"

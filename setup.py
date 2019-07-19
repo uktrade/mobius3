@@ -19,8 +19,14 @@ setuptools.setup(
         'Programming Language :: Python :: 3',
         'License :: OSI Approved :: MIT License',
     ],
+    python_requires='>=3.7.0',
     py_modules=[
         'mobius3',
+    ],
+    install_requires=[
+        'lowhaio==0.0.79',
+        'lowhaio-aws-sigv4-unsigned-payload==0.0.4',
+        'pyinotify==0.9.6',
     ],
     test_suite='test',
 )

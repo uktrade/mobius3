@@ -28,6 +28,7 @@ repos:
         - --disable=invalid-name
         - --disable=missing-docstring
         - --disable=no-self-use
+        - --disable=possibly-unused-variable
         - --disable=protected-access
         - --disable=too-few-public-methods
         - --disable=too-many-branches
