@@ -39,7 +39,7 @@ await stop()
 
 ## Under the hood and limitations
 
-Renaming files or folders map to no atomic operation in S3 and conflicts are dealt with where S3 is always the source-of-truth. This means that with concurrent modifications or deletions to the same file(s) or folder(s) _data can be lost_ and the directory layout may get corrupted.
+Renaming files or folders map to no atomic operation in S3, and conflicts are dealt with where S3 is always the source-of-truth. This means that with concurrent modifications or deletions to the same file(s) or folder(s) _data can be lost_ and the directory layout may get corrupted.
 
 A simple polling mechanism is used to check for changes in S3: hence for large number of files/objects mobius3 may not be performant.
 
