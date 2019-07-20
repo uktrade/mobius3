@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import ssl
 import unittest
 
@@ -34,9 +35,9 @@ class TestIntegration(unittest.TestCase):
 
     @async_test
     async def test_single_small_file_uploaded(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
 
-        # Start syncing
-        os.mkdir('/s3-home-folder')
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
         await start()
@@ -44,14 +45,21 @@ class TestIntegration(unittest.TestCase):
         with open('/s3-home-folder/test-file', 'wb') as file:
             file.write(b'some-bytes')
 
-        # Wait for upload
-        await asyncio.sleep(1)
+        await await_upload()
 
-        # Check if file uploaded to bucket
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
 
         self.assertEqual(await object_body(request, 'test-file'), b'some-bytes')
+
+
+def create_directory(path):
+    async def delete_dir():
+        shutil.rmtree(path)
+
+    os.mkdir(path)
+
+    return delete_dir
 
 
 def get_docker_link_and_minio_compatible_http_pool():
@@ -74,6 +82,10 @@ def syncer_for(path):
         path, 'https://minio:9000/my-bucket', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
     )
+
+
+async def await_upload():
+    await asyncio.sleep(1)
 
 
 async def object_body(request, key):
