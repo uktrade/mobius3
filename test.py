@@ -37,7 +37,8 @@ class TestIntegration(unittest.TestCase):
 
         # Start syncing
         os.mkdir('/s3-home-folder')
-        start, _ = syncer_for('/s3-home-folder')
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
         await start()
 
         # Create test file to be uploaded

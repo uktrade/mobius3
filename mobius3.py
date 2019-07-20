@@ -30,7 +30,7 @@ def Syncer(local_root, remote_root, remote_region,
     upload_queue = asyncio.Queue()
     upload_tasks = None
 
-    request, _ = get_pool()
+    request, close_pool = get_pool()
     signed_request = signed(
         request, credentials=get_credentials, service='s3', region=remote_region
     )
@@ -47,7 +47,7 @@ def Syncer(local_root, remote_root, remote_region,
         wm.add_watch(local_root, pyinotify.ALL_EVENTS, rec=True)
 
     async def stop():
-        pass
+        await close_pool()
 
     def handle(event):
         try:
