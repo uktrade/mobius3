@@ -41,8 +41,7 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(stop)
         await start()
 
-        # Create test file to be uploaded
-        with open('/s3-home-folder/file', 'wb') as file:
+        with open('/s3-home-folder/test-file', 'wb') as file:
             file.write(b'some-bytes')
 
         # Wait for upload
@@ -52,7 +51,7 @@ class TestIntegration(unittest.TestCase):
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
 
-        self.assertEqual(await object_body(request, 'file'), b'some-bytes')
+        self.assertEqual(await object_body(request, 'test-file'), b'some-bytes')
 
 
 def get_docker_link_and_minio_compatible_http_pool():
