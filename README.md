@@ -44,6 +44,8 @@ AWS Credentials are taken from the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KE
 
 Renaming files or folders map to no atomic operation in S3, and conflicts are dealt with where S3 is always the source-of-truth. This means that with concurrent modifications or deletions to the same file(s) or folder(s) _data can be lost_ and the directory layout may get corrupted.
 
+If a file has been updated or deleted locally, any concurrent changes from S3 are delayed for 60 seconds as a best-effort to avoid eventual consistency issues where S3 does not yet present a consistent view of latest changes.
+
 A simple polling mechanism is used to check for changes in S3: hence for large number of files/objects mobius3 may not be performant.
 
 However, every effort is made so that content of each file is not corrupted, i.e. files mid-way through being changed locally are _not_ uploaded until they stop being changed.
