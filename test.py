@@ -52,16 +52,7 @@ class TestIntegration(unittest.TestCase):
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
 
-        async def get_credentials_from_environment():
-            return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
-
-        signed_request = signed(
-            request, credentials=get_credentials_from_environment,
-            service='s3', region='us-east-1',
-        )
-        _, _, body = await signed_request(b'GET', 'https://minio:9000/my-bucket/file')
-        body_bytes = await buffered(body)
-        self.assertEqual(body_bytes, b'some-bytes')
+        self.assertEqual(await object_body(request, 'file'), b'some-bytes')
 
 
 def get_docker_link_and_minio_compatible_http_pool():
@@ -84,3 +75,16 @@ def syncer_for(path):
         path, 'https://minio:9000/my-bucket', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
     )
+
+
+async def object_body(request, key):
+    async def get_credentials_from_environment():
+        return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
+
+    signed_request = signed(
+        request, credentials=get_credentials_from_environment,
+        service='s3', region='us-east-1',
+    )
+    _, _, body = await signed_request(b'GET', f'https://minio:9000/my-bucket/{key}')
+    body_bytes = await buffered(body)
+    return body_bytes
