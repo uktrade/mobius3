@@ -30,13 +30,12 @@ class TestIntegration(unittest.TestCase):
 
     @async_test
     async def test_single_small_file_uploaded(self):
-        # Connection pool that is docker-link-friendly
         async def transform_fqdn(fqdn):
             return fqdn
         ssl_context = ssl.SSLContext()
         ssl_context.verify_mode = ssl.CERT_NONE
 
-        def get_pool():
+        def get_docker_link_and_minio_compatible_http_pool():
             return Pool(
                 # 0x20 encoding does not appear to work with linked containers
                 get_dns_resolver=lambda: Resolver(transform_fqdn=transform_fqdn),
@@ -48,7 +47,7 @@ class TestIntegration(unittest.TestCase):
         os.mkdir('/s3-home-folder')
         start, _ = Syncer(
             '/s3-home-folder', 'https://minio:9000/my-bucket', 'us-east-1',
-            get_pool=get_pool,
+            get_pool=get_docker_link_and_minio_compatible_http_pool,
         )
         await start()
 
@@ -60,7 +59,7 @@ class TestIntegration(unittest.TestCase):
         await asyncio.sleep(1)
 
         # Check if file uploaded to bucket
-        request, _ = get_pool()
+        request, _ = get_docker_link_and_minio_compatible_http_pool()
 
         async def get_credentials_from_environment():
             return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
