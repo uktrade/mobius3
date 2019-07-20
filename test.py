@@ -32,8 +32,6 @@ class TestIntegration(unittest.TestCase):
 
     @async_test
     async def test_single_small_file_uploaded(self):
-        self.assertTrue(Syncer)
-
         logger = logging.getLogger()
         logger.setLevel(logging.DEBUG)
 
