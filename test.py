@@ -33,10 +33,7 @@ class TestIntegration(unittest.TestCase):
 
         # Start syncing
         os.mkdir('/s3-home-folder')
-        start, _ = Syncer(
-            '/s3-home-folder', 'https://minio:9000/my-bucket', 'us-east-1',
-            get_pool=get_docker_link_and_minio_compatible_http_pool,
-        )
+        start, _ = syncer_for('/s3-home-folder')
         await start()
 
         # Create test file to be uploaded
@@ -73,4 +70,11 @@ def get_docker_link_and_minio_compatible_http_pool():
         get_dns_resolver=lambda: Resolver(transform_fqdn=transform_fqdn),
         # We use self-signed certs locally
         get_ssl_context=lambda: ssl_context,
+    )
+
+
+def syncer_for(path):
+    return Syncer(
+        path, 'https://minio:9000/my-bucket', 'us-east-1',
+        get_pool=get_docker_link_and_minio_compatible_http_pool,
     )
