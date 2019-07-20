@@ -28,6 +28,10 @@ def async_test(func):
 
 class TestIntegration(unittest.TestCase):
 
+    def add_async_cleanup(self, coroutine, *args):
+        loop = asyncio.get_event_loop()
+        self.addCleanup(loop.run_until_complete, coroutine(*args))
+
     @async_test
     async def test_single_small_file_uploaded(self):
 
@@ -44,7 +48,8 @@ class TestIntegration(unittest.TestCase):
         await asyncio.sleep(1)
 
         # Check if file uploaded to bucket
-        request, _ = get_docker_link_and_minio_compatible_http_pool()
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
 
         async def get_credentials_from_environment():
             return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
