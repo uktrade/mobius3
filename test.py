@@ -1,8 +1,6 @@
 import asyncio
-import logging
 import os
 import ssl
-import sys
 import unittest
 
 from aiodnsresolver import (
@@ -32,15 +30,7 @@ class TestIntegration(unittest.TestCase):
 
     @async_test
     async def test_single_small_file_uploaded(self):
-        logger = logging.getLogger()
-        logger.setLevel(logging.DEBUG)
-
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(logging.DEBUG)
-        logger.addHandler(handler)
-
         # Connection pool that is docker-link-friendly
-
         async def transform_fqdn(fqdn):
             return fqdn
         ssl_context = ssl.SSLContext()
