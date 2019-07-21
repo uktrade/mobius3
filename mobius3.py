@@ -82,10 +82,19 @@ def Syncer(local_root, remote_root, remote_region,
     loop = asyncio.get_running_loop()
     logger = logging.getLogger('mobius3')
 
+    # The file descriptor returned from inotify_init
     fd = None
+
+    # Watch descriptors to paths. A notification returns only a relative
+    # path to its watch descriptor path: these are used to find the full
+    # path of any notified-on files
     wds_to_path = {}
+
+    # We may get multiple notifications for the same directories, so se ensure
+    # we don't duplicate them
     paths_set = set()
 
+    # Uploads are initiated in the order received
     job_queue = asyncio.Queue()
 
     # A path -> version dict is maintained during queues and uploads. When a
@@ -96,6 +105,8 @@ def Syncer(local_root, remote_root, remote_region,
     # change to the filesystem, and another upload will be scheduled, so we
     # abort
     path_versions = WeakValueDictionary()
+
+    # The asyncio task pool that performs the uploads
     upload_tasks = []
 
     request, close_pool = get_pool()
