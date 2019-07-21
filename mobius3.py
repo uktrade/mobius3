@@ -73,7 +73,6 @@ def Syncer(local_root, remote_root, remote_region,
     fd = None
     paths = {}
     paths_set = set()
-    raw_bytes = b''
 
     upload_queue = asyncio.Queue()
     upload_tasks = []
@@ -124,24 +123,17 @@ def Syncer(local_root, remote_root, remote_region,
         await asyncio.sleep(0)
 
     def handle():
-        nonlocal raw_bytes
-
         FIONREAD_output = array.array('i', [0])
         fcntl.ioctl(fd, termios.FIONREAD, FIONREAD_output)
         bytes_to_read = FIONREAD_output[0]
-        raw_bytes += os.read(fd, bytes_to_read)
+        raw_bytes = os.read(fd, bytes_to_read)
 
         offset = 0
         while True:
-            # Not completely sure if the kernel can _ever_ add a partial
-            # message, but we err on the side of paranoia and assume it can
-            if len(raw_bytes) < STRUCT_HEADER.size:
+            if not raw_bytes:
                 break
 
             wd, mask, _, length = STRUCT_HEADER.unpack_from(raw_bytes, offset)
-            if len(raw_bytes) < STRUCT_HEADER.size + length:
-                break
-
             offset += STRUCT_HEADER.size
             path = raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8')
             offset += length
