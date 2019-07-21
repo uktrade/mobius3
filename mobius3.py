@@ -238,32 +238,33 @@ def Syncer(
                     yield chunk
 
         while True:
-            job = await job_queue.get()
-
             try:
-                if job['versions_current'] != job['versions_original']:
-                    continue
-                pathname = job['path']
+                job = await job_queue.get()
+                try:
+                    if job['versions_current'] != job['versions_original']:
+                        continue
+                    pathname = job['path']
 
-                remote_url = remote_root + '/' + \
-                    str(PurePosixPath(pathname).relative_to(local_root))
-                size = os.stat(pathname).st_size
-                content_length = str(size).encode()
+                    remote_url = remote_root + '/' + \
+                        str(PurePosixPath(pathname).relative_to(local_root))
+                    size = os.stat(pathname).st_size
+                    content_length = str(size).encode()
 
-                code, _, body = await signed_request(
-                    b'PUT', remote_url, body=file_body,
-                    headers=((b'content-length', content_length),)
-                )
-                body_bytes = await buffered(body)
-                if code != b'200':
-                    raise Exception(code, body_bytes)
+                    code, _, body = await signed_request(
+                        b'PUT', remote_url, body=file_body,
+                        headers=((b'content-length', content_length),)
+                    )
+                    body_bytes = await buffered(body)
+                    if code != b'200':
+                        raise Exception(code, body_bytes)
+                finally:
+                    job_queue.task_done()
 
             except Exception as exception:
+                if isinstance(exception, asyncio.CancelledError):
+                    raise
                 if not isinstance(exception.__cause__, CancelledUpload):
                     logger.exception('Exception during upload of %s', pathname)
-
-            finally:
-                job_queue.task_done()
 
     parent_locals = locals()
 
