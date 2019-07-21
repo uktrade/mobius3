@@ -54,6 +54,33 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(await object_body(request, filename), b'some-bytes')
 
+    @async_test
+    async def test_file_inside_directory(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        directory_name = str(uuid.uuid4())
+        filename = str(uuid.uuid4())
+        os.mkdir('/s3-home-folder/' + directory_name)
+
+        # To allow Syncer to add a watcher to the directory. However, this
+        # shows the Syncer is not robust
+        await asyncio.sleep(0.1)
+
+        with open(f'/s3-home-folder/{directory_name}/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, f'{directory_name}/{filename}'), b'some-bytes')
+
 
 def create_directory(path):
     async def delete_dir():

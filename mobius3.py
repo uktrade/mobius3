@@ -71,6 +71,7 @@ def Syncer(local_root, remote_root, remote_region,
     logger = logging.getLogger('mobius3')
 
     fd = None
+    wds = {}
     raw_bytes = b''
 
     upload_queue = asyncio.Queue()
@@ -90,8 +91,15 @@ def Syncer(local_root, remote_root, remote_region,
         ]
 
         fd = libc.inotify_init()
-        libc.inotify_add_watch(fd, local_root.encode('utf-8'), InotifyFlags.IN_CLOSE_WRITE)
         loop.add_reader(fd, handle)
+        add_watcher(local_root)
+
+    def add_watcher(path):
+        wd = libc.inotify_add_watch(fd, path.encode('utf-8'),
+                                    InotifyFlags.IN_CLOSE_WRITE |
+                                    InotifyFlags.IN_CREATE,
+                                    )
+        wds[wd] = path
 
     async def stop():
         loop.remove_reader(fd)
@@ -115,7 +123,7 @@ def Syncer(local_root, remote_root, remote_region,
             if len(raw_bytes) < STRUCT_HEADER.size:
                 break
 
-            _, mask, _, length = STRUCT_HEADER.unpack_from(raw_bytes, offset)
+            wd, mask, _, length = STRUCT_HEADER.unpack_from(raw_bytes, offset)
             if len(raw_bytes) < STRUCT_HEADER.size + length:
                 break
 
@@ -133,12 +141,16 @@ def Syncer(local_root, remote_root, remote_region,
                     return
 
                 try:
-                    handler(mask, path)
+                    handler(mask, wds[wd] + '/' + path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
     def handle_IN_CLOSE_WRITE(_, path):
-        upload_queue.put_nowait(local_root + '/' + path)
+        upload_queue.put_nowait(path)
+
+    def handle_IN_CREATE(mask, path):
+        if mask & InotifyFlags.IN_ISDIR:
+            add_watcher(path)
 
     async def file_body(pathname):
         with open(pathname, 'rb') as file:
