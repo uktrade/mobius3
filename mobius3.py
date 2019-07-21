@@ -118,7 +118,7 @@ def Syncer(local_root, remote_root, remote_region,
 
         offset = 0
         while True:
-            # Not completely sure if the kernal can _ever_ add a partial
+            # Not completely sure if the kernel can _ever_ add a partial
             # message, but we err on the side of paranoia and assume it can
             if len(raw_bytes) < STRUCT_HEADER.size:
                 break
