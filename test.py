@@ -36,16 +36,6 @@ class TestIntegration(unittest.TestCase):
 
     @async_test
     async def test_single_small_file_uploaded(self):
-
-        import logging
-        import sys
-        logger = logging.getLogger()
-        logger.setLevel(logging.DEBUG)
-
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(logging.DEBUG)
-        logger.addHandler(handler)
-
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
 
