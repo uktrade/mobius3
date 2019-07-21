@@ -72,6 +72,7 @@ def Syncer(local_root, remote_root, remote_region,
 
     fd = None
     paths = {}
+    paths_set = set()
     raw_bytes = b''
 
     upload_queue = asyncio.Queue()
@@ -95,11 +96,24 @@ def Syncer(local_root, remote_root, remote_region,
         add_watcher(local_root)
 
     def add_watcher(path):
+        if path in paths_set:
+            return
+
         wd = libc.inotify_add_watch(fd, path.encode('utf-8'),
                                     InotifyFlags.IN_CLOSE_WRITE |
                                     InotifyFlags.IN_CREATE,
                                     )
         paths[wd] = path
+        paths_set.add(path)
+
+        # By the time we've added a watcher, files or subdirectories may have
+        # been created
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                upload_queue.put_nowait(os.path.join(root, file))
+
+            for directory in dirs:
+                add_watcher(os.path.join(root, directory))
 
     async def stop():
         loop.remove_reader(fd)
