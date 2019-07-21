@@ -3,6 +3,7 @@ import os
 import shutil
 import ssl
 import unittest
+import uuid
 
 from aiodnsresolver import (
     Resolver,
@@ -35,6 +36,16 @@ class TestIntegration(unittest.TestCase):
 
     @async_test
     async def test_single_small_file_uploaded(self):
+
+        import logging
+        import sys
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
 
@@ -42,7 +53,8 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(stop)
         await start()
 
-        with open('/s3-home-folder/test-file', 'wb') as file:
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
             file.write(b'some-bytes')
 
         await await_upload()
@@ -50,7 +62,7 @@ class TestIntegration(unittest.TestCase):
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
 
-        self.assertEqual(await object_body(request, 'test-file'), b'some-bytes')
+        self.assertEqual(await object_body(request, filename), b'some-bytes')
 
 
 def create_directory(path):

@@ -1,9 +1,15 @@
+import array
 import asyncio
+import ctypes
+import enum
+import fcntl
+import termios
 import logging
 import os
 from pathlib import (
     PurePosixPath,
 )
+import struct
 
 from lowhaio import (
     Pool,
@@ -12,7 +18,43 @@ from lowhaio import (
 from lowhaio_aws_sigv4_unsigned_payload import (
     signed,
 )
-import pyinotify  # pylint: disable=import-error
+
+
+libc = ctypes.cdll.LoadLibrary('libc.so.6')
+libc.inotify_init.argtypes = []
+libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+
+
+class InotifyFlags(enum.IntEnum):
+    # Can watch for these events
+    IN_ACCESS = 0x00000001
+    IN_MODIFY = 0x00000002
+    IN_ATTRIB = 0x00000004
+    IN_CLOSE_WRITE = 0x00000008
+    IN_CLOSE_NOWRITE = 0x00000010
+    IN_OPEN = 0x00000020
+    IN_MOVED_FROM = 0x00000040
+    IN_MOVED_TO = 0x00000080
+    IN_CREATE = 0x00000100
+    IN_DELETE = 0x00000200
+    IN_DELETE_SELF = 0x00000400
+    IN_MOVE_SELF = 0x00000800
+
+    # Events sent by the kernel without explicitly watching for them
+    IN_UNMOUNT = 0x00002000
+    IN_Q_OVERFLOW = 0x00004000
+    IN_IGNORED = 0x00008000
+
+    # Flags
+    IN_ONLYDIR = 0x01000000
+    IN_DONT_FOLLOW = 0x02000000
+    IN_EXCL_UNLINK = 0x04000000
+    IN_MASK_ADD = 0x20000000
+    IN_ISDIR = 0x40000000
+    IN_ONESHOT = 0x80000000
+
+
+STRUCT_HEADER = struct.Struct('iIII')
 
 
 async def get_credentials_from_environment():
@@ -27,8 +69,12 @@ def Syncer(local_root, remote_root, remote_region,
 
     loop = asyncio.get_running_loop()
     logger = logging.getLogger('mobius3')
+
+    fd = None
+    raw_bytes = b''
+
     upload_queue = asyncio.Queue()
-    upload_tasks = None
+    upload_tasks = []
 
     request, close_pool = get_pool()
     signed_request = signed(
@@ -37,31 +83,62 @@ def Syncer(local_root, remote_root, remote_region,
 
     async def start():
         nonlocal upload_tasks
+        nonlocal fd
         upload_tasks = [
             asyncio.create_task(upload())
             for _ in range(0, concurrent_uploads)
         ]
 
-        wm = pyinotify.WatchManager()
-        pyinotify.AsyncioNotifier(wm, loop, default_proc_fun=handle)
-        wm.add_watch(local_root, pyinotify.ALL_EVENTS, rec=True)
+        fd = libc.inotify_init()
+        libc.inotify_add_watch(fd, local_root.encode('utf-8'), InotifyFlags.IN_CLOSE_WRITE)
+        loop.add_reader(fd, handle)
 
     async def stop():
+        loop.remove_reader(fd)
         await close_pool()
+        for task in upload_tasks:
+            task.cancel()
+        await asyncio.sleep(0)
 
-    def handle(event):
-        try:
-            handler = parent_locals[f'handle_{event.maskname}']
-        except KeyError:
-            return
+    def handle():
+        nonlocal raw_bytes
 
-        try:
-            handler(event)
-        except Exception:
-            logger.exception('Exception during handler %s', event)
+        FIONREAD_output = array.array('i', [0])
+        fcntl.ioctl(fd, termios.FIONREAD, FIONREAD_output)
+        bytes_to_read = FIONREAD_output[0]
+        raw_bytes += os.read(fd, bytes_to_read)
 
-    def handle_IN_CLOSE_WRITE(event):
-        upload_queue.put_nowait(event.pathname)
+        offset = 0
+        while True:
+            # Not completely sure if the kernal can _ever_ add a partial
+            # message, but we err on the side of paranoia and assume it can
+            if len(raw_bytes) < STRUCT_HEADER.size:
+                break
+
+            _, mask, _, length = STRUCT_HEADER.unpack_from(raw_bytes, offset)
+            if len(raw_bytes) < STRUCT_HEADER.size + length:
+                break
+
+            offset += STRUCT_HEADER.size
+            path = raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8')
+            offset += length
+            raw_bytes = raw_bytes[offset:]
+            offset = 0
+
+            flags = [flag for flag in InotifyFlags.__members__.values() if flag & mask]
+            for flag in flags:
+                try:
+                    handler = parent_locals[f'handle_{flag.name}']
+                except KeyError:
+                    return
+
+                try:
+                    handler(path)
+                except Exception:
+                    logger.exception('Exception during handler %s', path)
+
+    def handle_IN_CLOSE_WRITE(path):
+        upload_queue.put_nowait(local_root + '/' + path)
 
     async def file_body(pathname):
         with open(pathname, 'rb') as file:

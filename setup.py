@@ -26,7 +26,6 @@ setuptools.setup(
     install_requires=[
         'lowhaio==0.0.79',
         'lowhaio-aws-sigv4-unsigned-payload==0.0.4',
-        'pyinotify==0.9.6',
     ],
     test_suite='test',
 )
