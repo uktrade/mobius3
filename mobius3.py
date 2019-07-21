@@ -71,6 +71,8 @@ def Syncer(local_root, remote_root, remote_region,
     logger = logging.getLogger('mobius3')
 
     fd = None
+    paths = {}
+    paths_set = set()
     raw_bytes = b''
 
     upload_queue = asyncio.Queue()
@@ -90,11 +92,32 @@ def Syncer(local_root, remote_root, remote_region,
         ]
 
         fd = libc.inotify_init()
-        libc.inotify_add_watch(fd, local_root.encode('utf-8'), InotifyFlags.IN_CLOSE_WRITE)
         loop.add_reader(fd, handle)
+        ensure_watcher(local_root)
+
+    def ensure_watcher(path):
+        if path in paths_set:
+            return
+
+        wd = libc.inotify_add_watch(fd, path.encode('utf-8'),
+                                    InotifyFlags.IN_CLOSE_WRITE |
+                                    InotifyFlags.IN_CREATE,
+                                    )
+        paths[wd] = path
+        paths_set.add(path)
+
+        # By the time we've added a watcher, files or subdirectories may have
+        # been created
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                upload_queue.put_nowait(os.path.join(root, file))
+
+            for directory in dirs:
+                ensure_watcher(os.path.join(root, directory))
 
     async def stop():
         loop.remove_reader(fd)
+        os.close(fd)
         await close_pool()
         for task in upload_tasks:
             task.cancel()
@@ -110,12 +133,12 @@ def Syncer(local_root, remote_root, remote_region,
 
         offset = 0
         while True:
-            # Not completely sure if the kernal can _ever_ add a partial
+            # Not completely sure if the kernel can _ever_ add a partial
             # message, but we err on the side of paranoia and assume it can
             if len(raw_bytes) < STRUCT_HEADER.size:
                 break
 
-            _, mask, _, length = STRUCT_HEADER.unpack_from(raw_bytes, offset)
+            wd, mask, _, length = STRUCT_HEADER.unpack_from(raw_bytes, offset)
             if len(raw_bytes) < STRUCT_HEADER.size + length:
                 break
 
@@ -133,12 +156,16 @@ def Syncer(local_root, remote_root, remote_region,
                     return
 
                 try:
-                    handler(path)
+                    handler(mask, paths[wd] + '/' + path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
-    def handle_IN_CLOSE_WRITE(path):
-        upload_queue.put_nowait(local_root + '/' + path)
+    def handle_IN_CLOSE_WRITE(_, path):
+        upload_queue.put_nowait(path)
+
+    def handle_IN_CREATE(mask, path):
+        if mask & InotifyFlags.IN_ISDIR:
+            ensure_watcher(path)
 
     async def file_body(pathname):
         with open(pathname, 'rb') as file:
