@@ -109,7 +109,7 @@ def Syncer(local_root, remote_root, remote_region,
         # been created
         for root, dirs, files in os.walk(path):
             for file in files:
-                upload_queue.put_nowait(os.path.join(root, file))
+                schedule_upload(os.path.join(root, file))
 
             for directory in dirs:
                 ensure_watcher(os.path.join(root, directory))
@@ -153,11 +153,14 @@ def Syncer(local_root, remote_root, remote_region,
                     logger.exception('Exception during handler %s', path)
 
     def handle_IN_CLOSE_WRITE(_, path):
-        upload_queue.put_nowait(path)
+        schedule_upload(path)
 
     def handle_IN_CREATE(mask, path):
         if mask & InotifyFlags.IN_ISDIR:
             ensure_watcher(path)
+
+    def schedule_upload(path):
+        upload_queue.put_nowait(path)
 
     async def file_body(pathname):
         with open(pathname, 'rb') as file:
