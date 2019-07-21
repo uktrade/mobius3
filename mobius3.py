@@ -73,11 +73,12 @@ async def get_credentials_from_environment():
     return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
 
 
-def Syncer(local_root, remote_root, remote_region,
-           concurrent_uploads=5,
-           get_credentials=get_credentials_from_environment,
-           get_pool=Pool,
-           ):
+def Syncer(
+        local_root, remote_root, remote_region,
+        concurrent_uploads=5,
+        get_credentials=get_credentials_from_environment,
+        get_pool=Pool,
+):
 
     loop = asyncio.get_running_loop()
     logger = logging.getLogger('mobius3')
