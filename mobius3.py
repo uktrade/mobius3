@@ -133,11 +133,11 @@ def Syncer(local_root, remote_root, remote_region,
                     return
 
                 try:
-                    handler(path)
+                    handler(mask, path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
-    def handle_IN_CLOSE_WRITE(path):
+    def handle_IN_CLOSE_WRITE(_, path):
         upload_queue.put_nowait(local_root + '/' + path)
 
     async def file_body(pathname):
