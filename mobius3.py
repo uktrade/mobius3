@@ -2,6 +2,7 @@ import array
 import asyncio
 import ctypes
 import enum
+import errno
 import fcntl
 import termios
 import logging
@@ -10,6 +11,9 @@ from pathlib import (
     PurePosixPath,
 )
 import struct
+from weakref import (
+    WeakValueDictionary,
+)
 
 from lowhaio import (
     Pool,
@@ -23,6 +27,14 @@ from lowhaio_aws_sigv4_unsigned_payload import (
 libc = ctypes.cdll.LoadLibrary('libc.so.6')
 libc.inotify_init.argtypes = []
 libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+
+
+class CancelledUpload(Exception):
+    pass
+
+
+class WeakReferenceableDict(dict):
+    pass
 
 
 class InotifyFlags(enum.IntEnum):
@@ -71,10 +83,19 @@ def Syncer(local_root, remote_root, remote_region,
     logger = logging.getLogger('mobius3')
 
     fd = None
-    paths = {}
+    wds_to_path = {}
     paths_set = set()
 
-    upload_queue = asyncio.Queue()
+    job_queue = asyncio.Queue()
+
+    # A path -> "version" dict is maintained during queued and uploads.
+    # When a path is scheduled to be uploaded, its version, along with all
+    # of its parent paths versions, are incremented. Before, during, and most
+    # importantly after the last read of data for an upload, but _before_ its
+    # uploaded, the versions are checked to see if they are the latest. If not
+    # there may have been a change to the filesystem, and another upload will
+    # be scheduled, so we abort
+    path_versions = WeakValueDictionary()
     upload_tasks = []
 
     request, close_pool = get_pool()
@@ -87,7 +108,7 @@ def Syncer(local_root, remote_root, remote_region,
         nonlocal fd
         upload_tasks = [
             asyncio.create_task(upload())
-            for _ in range(0, concurrent_uploads)
+            for i in range(0, concurrent_uploads)
         ]
 
         fd = libc.inotify_init()
@@ -98,18 +119,25 @@ def Syncer(local_root, remote_root, remote_region,
         if path in paths_set:
             return
 
-        wd = libc.inotify_add_watch(fd, path.encode('utf-8'),
-                                    InotifyFlags.IN_CLOSE_WRITE |
-                                    InotifyFlags.IN_CREATE,
-                                    )
-        paths[wd] = path
+        try:
+            wd = libc.inotify_add_watch(fd, path.encode('utf-8'),
+                                        InotifyFlags.IN_ONLYDIR |
+                                        InotifyFlags.IN_CLOSE_WRITE |
+                                        InotifyFlags.IN_CREATE,
+                                        )
+        except OSError:
+            if OSError.errno == errno.ENOTDIR:
+                return
+            raise
+
+        wds_to_path[wd] = path
         paths_set.add(path)
 
         # By the time we've added a watcher, files or subdirectories may have
         # been created
         for root, dirs, files in os.walk(path):
             for file in files:
-                upload_queue.put_nowait(os.path.join(root, file))
+                schedule_upload(os.path.join(root, file))
 
             for directory in dirs:
                 ensure_watcher(os.path.join(root, directory))
@@ -148,43 +176,80 @@ def Syncer(local_root, remote_root, remote_region,
                     return
 
                 try:
-                    handler(mask, paths[wd] + '/' + path)
+                    handler(mask, wds_to_path[wd] + '/' + path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
     def handle_IN_CLOSE_WRITE(_, path):
-        upload_queue.put_nowait(path)
+        schedule_upload(path)
 
     def handle_IN_CREATE(mask, path):
         if mask & InotifyFlags.IN_ISDIR:
             ensure_watcher(path)
 
-    async def file_body(pathname):
-        with open(pathname, 'rb') as file:
-            for chunk in iter(lambda: file.read(16384), b''):
-                yield chunk
+    def schedule_upload(path):
+        path_posix = PurePosixPath(path)
+        versions = {
+            parent: path_versions.setdefault(parent, default=WeakReferenceableDict(version=0))
+            for parent in [path_posix] + list(path_posix.parents)
+        }
+
+        versions[path_posix]['version'] += 1
+
+        job_queue.put_nowait({
+            'path': path,
+            'versions_original': {key: version.copy() for key, version in versions.items()},
+            'versions_current': versions,
+        })
 
     async def upload():
+
+        async def file_body():
+            uploaded = 0
+            with open(pathname, 'rb') as file:
+                for chunk in iter(lambda: file.read(16384), b''):
+                    # Before the final chunk, but _after_ we read from the
+                    # filesystem, we yield to make sure any events have been
+                    # processed that mean the file may have been changed
+                    uploaded += len(chunk)
+                    if uploaded == size:
+                        # Hacky: may need a better way to determine that we
+                        # have definitely received the latest notifications
+                        # for this file (or parent directories)
+                        await asyncio.sleep(0.5)
+
+                    if job['versions_current'] != job['versions_original']:
+                        raise CancelledUpload()
+
+                    yield chunk
+
         while True:
-            pathname = await upload_queue.get()
+            job = await job_queue.get()
 
             try:
+                if job['versions_current'] != job['versions_original']:
+                    continue
+                pathname = job['path']
+
                 remote_url = remote_root + '/' + \
                     str(PurePosixPath(pathname).relative_to(local_root))
-                content_length = str(os.stat(pathname).st_size).encode()
+                size = os.stat(pathname).st_size
+                content_length = str(size).encode()
 
                 code, _, body = await signed_request(
-                    b'PUT', remote_url, body=file_body, body_args=(pathname,),
+                    b'PUT', remote_url, body=file_body,
                     headers=((b'content-length', content_length),)
                 )
                 body_bytes = await buffered(body)
                 if code != b'200':
                     raise Exception(code, body_bytes)
 
-            except Exception:
-                logger.exception('Exception during upload of %s', pathname)
+            except Exception as exception:
+                if not isinstance(exception.__cause__, CancelledUpload):
+                    logger.exception('Exception during upload of %s', pathname)
+
             finally:
-                upload_queue.task_done()
+                job_queue.task_done()
 
     parent_locals = locals()
 

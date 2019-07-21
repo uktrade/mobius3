@@ -128,6 +128,32 @@ class TestIntegration(unittest.TestCase):
         body_bytes = await object_body(request, f'{directory_1}/{directory_2}/{filename}')
         self.assertEqual(body_bytes, b'some-bytes')
 
+    @async_test
+    async def test_file_changed_half_way_through(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'\x00' * 10000000)
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'\x01' * 10000000)
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'\x01' * 10000000)
+
 
 def create_directory(path):
     async def delete_dir():
