@@ -71,7 +71,7 @@ def Syncer(local_root, remote_root, remote_region,
     logger = logging.getLogger('mobius3')
 
     fd = None
-    wds = {}
+    paths = {}
     raw_bytes = b''
 
     upload_queue = asyncio.Queue()
@@ -99,7 +99,7 @@ def Syncer(local_root, remote_root, remote_region,
                                     InotifyFlags.IN_CLOSE_WRITE |
                                     InotifyFlags.IN_CREATE,
                                     )
-        wds[wd] = path
+        paths[wd] = path
 
     async def stop():
         loop.remove_reader(fd)
@@ -141,7 +141,7 @@ def Syncer(local_root, remote_root, remote_region,
                     return
 
                 try:
-                    handler(mask, wds[wd] + '/' + path)
+                    handler(mask, paths[wd] + '/' + path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
