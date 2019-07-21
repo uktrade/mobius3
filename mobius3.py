@@ -2,6 +2,7 @@ import array
 import asyncio
 import ctypes
 import enum
+import errno
 import fcntl
 import termios
 import logging
@@ -98,10 +99,17 @@ def Syncer(local_root, remote_root, remote_region,
         if path in paths_set:
             return
 
-        wd = libc.inotify_add_watch(fd, path.encode('utf-8'),
-                                    InotifyFlags.IN_CLOSE_WRITE |
-                                    InotifyFlags.IN_CREATE,
-                                    )
+        try:
+            wd = libc.inotify_add_watch(fd, path.encode('utf-8'),
+                                        InotifyFlags.IN_ONLYDIR |
+                                        InotifyFlags.IN_CLOSE_WRITE |
+                                        InotifyFlags.IN_CREATE,
+                                        )
+        except OSError:
+            if OSError.errno == errno.ENOTDIR:
+                return
+            raise
+
         wds_to_path[wd] = path
         paths_set.add(path)
 
