@@ -117,6 +117,7 @@ def Syncer(local_root, remote_root, remote_region,
 
     async def stop():
         loop.remove_reader(fd)
+        os.close(fd)
         await close_pool()
         for task in upload_tasks:
             task.cancel()
