@@ -66,6 +66,12 @@ class InotifyFlags(enum.IntEnum):
     IN_ONESHOT = 0x80000000
 
 
+WATCHED_EVENTS = \
+    InotifyFlags.IN_ONLYDIR | \
+    InotifyFlags.IN_CLOSE_WRITE | \
+    InotifyFlags.IN_CREATE
+
+
 STRUCT_HEADER = struct.Struct('iIII')
 
 
@@ -132,12 +138,7 @@ def Syncer(
             return
 
         try:
-            wd = libc.inotify_add_watch(
-                fd, path.encode('utf-8'),
-                InotifyFlags.IN_ONLYDIR |
-                InotifyFlags.IN_CLOSE_WRITE |
-                InotifyFlags.IN_CREATE,
-            )
+            wd = libc.inotify_add_watch(fd, path.encode('utf-8'), WATCHED_EVENTS)
         except OSError:
             if OSError.errno == errno.ENOTDIR:
                 return
