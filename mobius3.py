@@ -88,13 +88,13 @@ def Syncer(local_root, remote_root, remote_region,
 
     job_queue = asyncio.Queue()
 
-    # A path -> "version" dict is maintained during queued and uploads.
-    # When a path is scheduled to be uploaded, its version, along with all
-    # of its parent paths versions, are incremented. Before, during, and most
-    # importantly after the last read of data for an upload, but _before_ its
-    # uploaded, the versions are checked to see if they are the latest. If not
-    # there may have been a change to the filesystem, and another upload will
-    # be scheduled, so we abort
+    # A path -> version dict is maintained during queues and uploads. When a
+    # path is scheduled to be uploaded, its version is incremented. Before,
+    # during, and most importantly after the last read of data for an upload,
+    # but _before_ its uploaded, the versions of the path, and its parents are
+    # checked to see if they are the latest. If not there was as have been a
+    # change to the filesystem, and another upload will be scheduled, so we
+    # abort
     path_versions = WeakValueDictionary()
     upload_tasks = []
 
