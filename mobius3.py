@@ -93,9 +93,9 @@ def Syncer(local_root, remote_root, remote_region,
 
         fd = libc.inotify_init()
         loop.add_reader(fd, handle)
-        add_watcher(local_root)
+        ensure_watcher(local_root)
 
-    def add_watcher(path):
+    def ensure_watcher(path):
         if path in paths_set:
             return
 
@@ -113,7 +113,7 @@ def Syncer(local_root, remote_root, remote_region,
                 upload_queue.put_nowait(os.path.join(root, file))
 
             for directory in dirs:
-                add_watcher(os.path.join(root, directory))
+                ensure_watcher(os.path.join(root, directory))
 
     async def stop():
         loop.remove_reader(fd)
@@ -164,7 +164,7 @@ def Syncer(local_root, remote_root, remote_region,
 
     def handle_IN_CREATE(mask, path):
         if mask & InotifyFlags.IN_ISDIR:
-            add_watcher(path)
+            ensure_watcher(path)
 
     async def file_body(pathname):
         with open(pathname, 'rb') as file:
