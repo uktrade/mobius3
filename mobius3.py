@@ -71,7 +71,7 @@ def Syncer(local_root, remote_root, remote_region,
     logger = logging.getLogger('mobius3')
 
     fd = None
-    paths = {}
+    wds_to_path = {}
     paths_set = set()
 
     upload_queue = asyncio.Queue()
@@ -102,7 +102,7 @@ def Syncer(local_root, remote_root, remote_region,
                                     InotifyFlags.IN_CLOSE_WRITE |
                                     InotifyFlags.IN_CREATE,
                                     )
-        paths[wd] = path
+        wds_to_path[wd] = path
         paths_set.add(path)
 
         # By the time we've added a watcher, files or subdirectories may have
@@ -148,7 +148,7 @@ def Syncer(local_root, remote_root, remote_region,
                     return
 
                 try:
-                    handler(mask, paths[wd] + '/' + path)
+                    handler(mask, wds_to_path[wd] + '/' + path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
