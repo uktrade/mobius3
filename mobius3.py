@@ -132,11 +132,12 @@ def Syncer(
             return
 
         try:
-            wd = libc.inotify_add_watch(fd, path.encode('utf-8'),
-                                        InotifyFlags.IN_ONLYDIR |
-                                        InotifyFlags.IN_CLOSE_WRITE |
-                                        InotifyFlags.IN_CREATE,
-                                        )
+            wd = libc.inotify_add_watch(
+                fd, path.encode('utf-8'),
+                InotifyFlags.IN_ONLYDIR |
+                InotifyFlags.IN_CLOSE_WRITE |
+                InotifyFlags.IN_CREATE,
+            )
         except OSError:
             if OSError.errno == errno.ENOTDIR:
                 return
