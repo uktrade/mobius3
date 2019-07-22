@@ -61,6 +61,7 @@ class InotifyFlags(enum.IntEnum):
     IN_ONLYDIR = 0x01000000
     IN_DONT_FOLLOW = 0x02000000
     IN_EXCL_UNLINK = 0x04000000
+    IN_MASK_CREATE = 0x10000000   # Only from Linux 4.18, Docker Desktop uses 4.9
     IN_MASK_ADD = 0x20000000
     IN_ISDIR = 0x40000000
     IN_ONESHOT = 0x80000000
@@ -97,10 +98,6 @@ def Syncer(
     # path of any notified-on files
     wds_to_path = {}
 
-    # We may get multiple notifications for the same directories, so se ensure
-    # we don't duplicate them
-    paths_set = set()
-
     # Uploads are initiated in the order received
     job_queue = asyncio.Queue()
 
@@ -134,9 +131,6 @@ def Syncer(
         ensure_watcher(local_root)
 
     def ensure_watcher(path):
-        if path in paths_set:
-            return
-
         try:
             wd = libc.inotify_add_watch(fd, path.encode('utf-8'), WATCHED_EVENTS)
         except OSError:
@@ -145,7 +139,6 @@ def Syncer(
             raise
 
         wds_to_path[wd] = path
-        paths_set.add(path)
 
         # By the time we've added a watcher, files or subdirectories may have
         # been created
