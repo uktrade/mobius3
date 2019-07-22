@@ -129,7 +129,33 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(body_bytes, b'some-bytes')
 
     @async_test
-    async def test_file_changed_half_way_through(self):
+    async def test_file_closed_half_way_through_with_no_modification(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'\x00' * 10000000)
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        with open(f'/s3-home-folder/{filename}', 'a') as file:
+            pass
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'\x00' * 10000000)
+
+    @async_test
+    async def test_file_modified_and_closed_half_way_through(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
 
@@ -152,6 +178,35 @@ class TestIntegration(unittest.TestCase):
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
 
+        self.assertEqual(await object_body(request, filename), b'\x01' * 10000000)
+
+    @async_test
+    async def test_file_changed_half_way_through_no_close_then_close(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'\x00' * 10000000)
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'\x01' * 10000000)
+
+            await await_upload()
+
+            request, close = get_docker_link_and_minio_compatible_http_pool()
+            self.add_async_cleanup(close)
+
+            self.assertEqual(await object_code(request, filename), b'404')
+
+        await await_upload()
         self.assertEqual(await object_body(request, filename), b'\x01' * 10000000)
 
 
@@ -191,6 +246,18 @@ async def await_upload():
 
 
 async def object_body(request, key):
+    _, _, body = await object_triple(request, key)
+    body_bytes = await buffered(body)
+    return body_bytes
+
+
+async def object_code(request, key):
+    code, _, body = await object_triple(request, key)
+    await buffered(body)
+    return code
+
+
+async def object_triple(request, key):
     async def get_credentials_from_environment():
         return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
 
@@ -198,6 +265,4 @@ async def object_body(request, key):
         request, credentials=get_credentials_from_environment,
         service='s3', region='us-east-1',
     )
-    _, _, body = await signed_request(b'GET', f'https://minio:9000/my-bucket/{key}')
-    body_bytes = await buffered(body)
-    return body_bytes
+    return await signed_request(b'GET', f'https://minio:9000/my-bucket/{key}')

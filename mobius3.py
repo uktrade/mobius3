@@ -69,6 +69,7 @@ class InotifyFlags(enum.IntEnum):
 
 WATCHED_EVENTS = \
     InotifyFlags.IN_ONLYDIR | \
+    InotifyFlags.IN_MODIFY | \
     InotifyFlags.IN_CLOSE_WRITE | \
     InotifyFlags.IN_CREATE
 
@@ -180,7 +181,7 @@ def Syncer(
                 try:
                     handler = parent_locals[f'handle_{flag.name}']
                 except KeyError:
-                    return
+                    break
 
                 try:
                     handler(wds_to_path[wd] + '/' + path)
@@ -193,6 +194,14 @@ def Syncer(
     def handle_IN_CREATE(path):
         ensure_watcher(path)
 
+    def handle_IN_MODIFY(path):
+        bump_version(path)
+
+    def bump_version(path):
+        version = path_versions.setdefault(PurePosixPath(
+            path), default=WeakReferenceableDict(version=0))
+        version['version'] += 1
+
     def schedule_upload(path):
         path_posix = PurePosixPath(path)
         versions = {
@@ -200,7 +209,7 @@ def Syncer(
             for parent in [path_posix] + list(path_posix.parents)
         }
 
-        versions[path_posix]['version'] += 1
+        bump_version(path)
 
         job_queue.put_nowait({
             'path': path,
