@@ -215,14 +215,11 @@ def Syncer(
         bump_version(path)
 
     def bump_version(path):
-        version = path_versions.setdefault(PurePosixPath(
-            path), default=WeakReferenceableDict(version=0))
+        version = path_versions.setdefault(path, default=WeakReferenceableDict(version=0))
         version['version'] += 1
 
     def schedule_upload(path):
-        path_posix = PurePosixPath(path)
-
-        version = path_versions.setdefault(path_posix, default=WeakReferenceableDict(version=0))
+        version = path_versions.setdefault(path, default=WeakReferenceableDict(version=0))
         bump_version(path)
 
         job_queue.put_nowait({
