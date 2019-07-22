@@ -221,17 +221,14 @@ def Syncer(
 
     def schedule_upload(path):
         path_posix = PurePosixPath(path)
-        versions = {
-            parent: path_versions.setdefault(parent, default=WeakReferenceableDict(version=0))
-            for parent in [path_posix] + list(path_posix.parents)
-        }
 
+        version = path_versions.setdefault(path_posix, default=WeakReferenceableDict(version=0))
         bump_version(path)
 
         job_queue.put_nowait({
             'path': path,
-            'versions_original': {key: version.copy() for key, version in versions.items()},
-            'versions_current': versions,
+            'version_original': version.copy(),
+            'version_current': version,
         })
 
     async def flush_events(path):
@@ -261,7 +258,7 @@ def Syncer(
                 if is_last:
                     await flush_events(pathname)
 
-                if job['versions_current'] != job['versions_original']:
+                if job['version_current'] != job['version_original']:
                     raise CancelledUpload()
 
                 yield chunk
@@ -271,7 +268,7 @@ def Syncer(
             try:
                 job = await job_queue.get()
                 try:
-                    if job['versions_current'] != job['versions_original']:
+                    if job['version_current'] != job['version_original']:
                         continue
                     pathname = job['path']
 
