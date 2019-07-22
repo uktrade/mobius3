@@ -7,6 +7,7 @@ import fcntl
 import termios
 import logging
 import os
+import uuid
 from pathlib import (
     PurePosixPath,
 )
@@ -86,6 +87,7 @@ def Syncer(
         concurrent_uploads=5,
         get_credentials=get_credentials_from_environment,
         get_pool=Pool,
+        flush_file_root='.__mobius3__',
 ):
 
     loop = asyncio.get_running_loop()
@@ -113,6 +115,10 @@ def Syncer(
 
     # The asyncio task pool that performs the uploads
     upload_tasks = []
+
+    # Before completing an upload, we force a flush of the event queue for
+    # the uploads directory to ensure that we have processed any change events
+    flushes = WeakValueDictionary()
 
     request, close_pool = get_pool()
     signed_request = signed(
@@ -176,6 +182,16 @@ def Syncer(
             raw_bytes = raw_bytes[offset:]
             offset = 0
 
+            # Detect if this file is a flush
+            full_path = wds_to_path[wd] + '/' + path
+            try:
+                flush = flushes[full_path]
+            except KeyError:
+                pass
+            else:
+                flush.set()
+                continue
+
             flags = [flag for flag in InotifyFlags.__members__.values() if flag & mask]
             for flag in flags:
                 try:
@@ -184,7 +200,7 @@ def Syncer(
                     break
 
                 try:
-                    handler(wds_to_path[wd] + '/' + path)
+                    handler(full_path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
@@ -217,6 +233,14 @@ def Syncer(
             'versions_current': versions,
         })
 
+    async def flush_file(path):
+        flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
+        event = asyncio.Event()
+        flushes[str(flush_path)] = event
+        with open(str(flush_path), 'w'):
+            pass
+        await event.wait()
+
     async def upload():
 
         async def file_body():
@@ -228,10 +252,7 @@ def Syncer(
                     # processed that mean the file may have been changed
                     uploaded += len(chunk)
                     if uploaded == size:
-                        # Hacky: may need a better way to determine that we
-                        # have definitely received the latest notifications
-                        # for this file (or parent directories)
-                        await asyncio.sleep(0.5)
+                        await flush_file(pathname)
 
                     if job['versions_current'] != job['versions_original']:
                         raise CancelledUpload()
