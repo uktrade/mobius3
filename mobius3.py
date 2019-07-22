@@ -241,17 +241,30 @@ def Syncer(
             pass
         await event.wait()
 
+    def with_is_last(iterable):
+        try:
+            last = next(iterable)
+        except StopIteration:
+            return
+
+        for val in iterable:
+            yield False, last
+            last = val
+
+        yield True, last
+
     async def upload():
 
         async def file_body():
-            uploaded = 0
             with open(pathname, 'rb') as file:
-                for chunk in iter(lambda: file.read(16384), b''):
+
+                for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
                     # Before the final chunk, but _after_ we read from the
                     # filesystem, we yield to make sure any events have been
                     # processed that mean the file may have been changed
-                    uploaded += len(chunk)
-                    if uploaded == size:
+                    # We don't depend on the os-reported size in case it has
+                    # changed since we read it
+                    if is_last:
                         await flush_file(pathname)
 
                     if job['versions_current'] != job['versions_original']:
@@ -269,8 +282,7 @@ def Syncer(
 
                     remote_url = remote_root + '/' + \
                         str(PurePosixPath(pathname).relative_to(local_root))
-                    size = os.stat(pathname).st_size
-                    content_length = str(size).encode()
+                    content_length = str(os.stat(pathname).st_size).encode()
 
                     code, _, body = await signed_request(
                         b'PUT', remote_url, body=file_body,
