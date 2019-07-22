@@ -182,15 +182,16 @@ def Syncer(
             raw_bytes = raw_bytes[offset:]
             offset = 0
 
-            # Detect if this file is a flush
             full_path = wds_to_path[wd] + '/' + path
-            try:
-                flush = flushes[full_path]
-            except KeyError:
-                pass
-            else:
-                flush.set()
-                continue
+
+            if path.startswith(flush_file_root):
+                try:
+                    flush = flushes[full_path]
+                except KeyError:
+                    continue
+                else:
+                    flush.set()
+                    continue
 
             flags = [flag for flag in InotifyFlags.__members__.values() if flag & mask]
             for flag in flags:
