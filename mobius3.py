@@ -197,9 +197,8 @@ def Syncer(
     def handle_IN_CLOSE_WRITE(_, path):
         schedule_upload(path)
 
-    def handle_IN_CREATE(mask, path):
-        if mask & InotifyFlags.IN_ISDIR:
-            ensure_watcher(path)
+    def handle_IN_CREATE(_, path):
+        ensure_watcher(path)
 
     def schedule_upload(path):
         path_posix = PurePosixPath(path)
