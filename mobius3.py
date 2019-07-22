@@ -253,25 +253,24 @@ def Syncer(
 
         yield True, last
 
+    async def file_body(job, pathname):
+        with open(pathname, 'rb') as file:
+
+            for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
+                # Before the final chunk, but _after_ we read from the
+                # filesystem, we yield to make sure any events have been
+                # processed that mean the file may have been changed
+                # We don't depend on the os-reported size in case it has
+                # changed since we read it
+                if is_last:
+                    await flush_file(pathname)
+
+                if job['versions_current'] != job['versions_original']:
+                    raise CancelledUpload()
+
+                yield chunk
+
     async def upload():
-
-        async def file_body():
-            with open(pathname, 'rb') as file:
-
-                for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
-                    # Before the final chunk, but _after_ we read from the
-                    # filesystem, we yield to make sure any events have been
-                    # processed that mean the file may have been changed
-                    # We don't depend on the os-reported size in case it has
-                    # changed since we read it
-                    if is_last:
-                        await flush_file(pathname)
-
-                    if job['versions_current'] != job['versions_original']:
-                        raise CancelledUpload()
-
-                    yield chunk
-
         while True:
             try:
                 job = await job_queue.get()
@@ -285,7 +284,7 @@ def Syncer(
                     content_length = str(os.stat(pathname).st_size).encode()
 
                     code, _, body = await signed_request(
-                        b'PUT', remote_url, body=file_body,
+                        b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
                         headers=((b'content-length', content_length),)
                     )
                     body_bytes = await buffered(body)
