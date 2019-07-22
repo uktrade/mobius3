@@ -190,14 +190,14 @@ def Syncer(
                     return
 
                 try:
-                    handler(mask, wds_to_path[wd] + '/' + path)
+                    handler(wds_to_path[wd] + '/' + path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
-    def handle_IN_CLOSE_WRITE(_, path):
+    def handle_IN_CLOSE_WRITE(path):
         schedule_upload(path)
 
-    def handle_IN_CREATE(_, path):
+    def handle_IN_CREATE(path):
         ensure_watcher(path)
 
     def schedule_upload(path):
