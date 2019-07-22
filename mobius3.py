@@ -73,7 +73,7 @@ WATCHED_EVENTS = \
     InotifyFlags.IN_CREATE
 
 
-STRUCT_HEADER = struct.Struct('iIII')
+EVENT_HEADER = struct.Struct('iIII')
 
 
 async def get_credentials_from_environment():
@@ -168,8 +168,8 @@ def Syncer(
             if not raw_bytes:
                 break
 
-            wd, mask, _, length = STRUCT_HEADER.unpack_from(raw_bytes, offset)
-            offset += STRUCT_HEADER.size
+            wd, mask, _, length = EVENT_HEADER.unpack_from(raw_bytes, offset)
+            offset += EVENT_HEADER.size
             path = raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8')
             offset += length
             raw_bytes = raw_bytes[offset:]
