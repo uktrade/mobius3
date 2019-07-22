@@ -233,7 +233,7 @@ def Syncer(
             'versions_current': versions,
         })
 
-    async def flush_file(path):
+    async def flush_events(path):
         flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
         event = asyncio.Event()
         flushes[str(flush_path)] = event
@@ -257,13 +257,8 @@ def Syncer(
         with open(pathname, 'rb') as file:
 
             for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
-                # Before the final chunk, but _after_ we read from the
-                # filesystem, we yield to make sure any events have been
-                # processed that mean the file may have been changed
-                # We don't depend on the os-reported size in case it has
-                # changed since we read it
                 if is_last:
-                    await flush_file(pathname)
+                    await flush_events(pathname)
 
                 if job['versions_current'] != job['versions_original']:
                     raise CancelledUpload()
