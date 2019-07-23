@@ -2,7 +2,6 @@ import array
 import asyncio
 import ctypes
 import enum
-import errno
 import fcntl
 import termios
 import logging
@@ -28,7 +27,7 @@ from lowhaio_aws_sigv4_unsigned_payload import (
 )
 
 
-libc = ctypes.cdll.LoadLibrary('libc.so.6')
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
 libc.inotify_init.argtypes = []
 libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
 
@@ -152,12 +151,14 @@ def Syncer(
         ensure_watcher(local_root)
 
     def ensure_watcher(path):
-        try:
-            wd = libc.inotify_add_watch(fd, path.encode('utf-8'), WATCHED_EVENTS)
-        except OSError:
-            if OSError.errno == errno.ENOTDIR:
+        wd = libc.inotify_add_watch(fd, path.encode('utf-8'), WATCHED_EVENTS)
+        latest_errno = ctypes.set_errno(0)
+
+        if latest_errno:
+            try:
+                raise OSError(latest_errno, os.strerror(latest_errno))
+            except (NotADirectoryError, FileNotFoundError):
                 return
-            raise
 
         wds_to_path[wd] = path
 
