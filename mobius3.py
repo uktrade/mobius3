@@ -249,6 +249,7 @@ def Syncer(
                     continue
 
             flags = [flag for flag in InotifyFlags.__members__.values() if flag & mask]
+            is_dir = mask & InotifyFlags.IN_ISDIR
             for flag in flags:
                 try:
                     handler = parent_locals[f'handle_{flag.name}']
@@ -256,7 +257,7 @@ def Syncer(
                     break
 
                 try:
-                    handler(wd, mask, full_path)
+                    handler(wd, is_dir, full_path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
@@ -266,8 +267,8 @@ def Syncer(
     def handle_IN_CREATE(_, __, path):
         ensure_watcher(path)
 
-    def handle_IN_DELETE(_, mask, path):
-        if mask & InotifyFlags.IN_ISDIR:
+    def handle_IN_DELETE(_, is_dir, path):
+        if is_dir:
             return
 
         # Correctness does not depend on this bump: it's an optimisation
@@ -282,7 +283,7 @@ def Syncer(
     def handle_IN_MODIFY(_, __, path):
         bump_content_version(path)
 
-    def handle_IN_MOVED_FROM(_, mask, path):
+    def handle_IN_MOVED_FROM(_, is_dir, path):
         # Directory nesting not likely to be large
         def recursive_delete(prefix, directory):
             for child_name, child in list(directory['children'].items()):
@@ -291,7 +292,7 @@ def Syncer(
                 else:
                     recursive_delete(prefix + '/' + child_name, child)
 
-        if mask & InotifyFlags.IN_ISDIR:
+        if is_dir:
             try:
                 cache_directory = layout_cache_directory(path)
             except KeyError:
@@ -302,8 +303,8 @@ def Syncer(
         else:
             schedule_delete(path)
 
-    def handle_IN_MOVED_TO(_, mask, path):
-        if mask & InotifyFlags.IN_ISDIR:
+    def handle_IN_MOVED_TO(_, is_dir, path):
+        if is_dir:
             ensure_watcher(path)
         else:
             schedule_upload(path)
