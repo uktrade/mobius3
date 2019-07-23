@@ -214,13 +214,14 @@ def Syncer(
     def handle_IN_MODIFY(path):
         bump_version(path)
 
+    def get_version(path):
+        return path_versions.setdefault(path, default=WeakReferenceableDict(version=0))
+
     def bump_version(path):
-        version = path_versions.setdefault(path, default=WeakReferenceableDict(version=0))
-        version['version'] += 1
-        return version
+        get_version(path)['version'] += 1
 
     def schedule_upload(path):
-        version = bump_version(path)
+        version = get_version(path)
 
         job_queue.put_nowait({
             'path': path,
