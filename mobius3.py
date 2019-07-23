@@ -270,21 +270,7 @@ def Syncer(
             try:
                 job = await job_queue.get()
                 try:
-                    pathname = job['path']
-
-                    remote_url = remote_root + '/' + \
-                        str(PurePosixPath(pathname).relative_to(local_root))
-                    content_length = str(os.stat(pathname).st_size).encode()
-
-                    async with get_lock(pathname)(Mutex):
-                        code, _, body = await signed_request(
-                            b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
-                            headers=((b'content-length', content_length),)
-                        )
-                        body_bytes = await buffered(body)
-
-                    if code != b'200':
-                        raise Exception(code, body_bytes)
+                    await upload(job)
                 finally:
                     job_queue.task_done()
 
@@ -293,6 +279,23 @@ def Syncer(
                     raise
                 if not isinstance(exception.__cause__, FileContentChanged):
                     logger.exception('Exception during %s', job)
+
+    async def upload(job):
+        pathname = job['path']
+
+        remote_url = remote_root + '/' + \
+            str(PurePosixPath(pathname).relative_to(local_root))
+        content_length = str(os.stat(pathname).st_size).encode()
+
+        async with get_lock(pathname)(Mutex):
+            code, _, body = await signed_request(
+                b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
+                headers=((b'content-length', content_length),)
+            )
+            body_bytes = await buffered(body)
+
+        if code != b'200':
+            raise Exception(code, body_bytes)
 
     async def file_body(job, pathname):
         with open(pathname, 'rb') as file:
