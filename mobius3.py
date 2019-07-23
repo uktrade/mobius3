@@ -249,41 +249,38 @@ def Syncer(
                     continue
 
             flags = [flag for flag in InotifyFlags.__members__.values() if flag & mask]
-            is_dir = mask & InotifyFlags.IN_ISDIR
+            item_type = 'dir' if mask & InotifyFlags.IN_ISDIR else 'file'
             for flag in flags:
                 try:
-                    handler = parent_locals[f'handle_{flag.name}']
+                    handler = parent_locals[f'handle__{item_type}__{flag.name}']
                 except KeyError:
-                    break
+                    continue
 
                 try:
-                    handler(wd, is_dir, full_path)
+                    handler(wd, full_path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
-    def handle_IN_CLOSE_WRITE(_, __, path):
+    def handle__file__IN_CLOSE_WRITE(_, path):
         schedule_upload(path)
 
-    def handle_IN_CREATE(_, __, path):
+    def handle__dir__IN_CREATE(_, path):
         ensure_watcher(path)
 
-    def handle_IN_DELETE(_, is_dir, path):
-        if is_dir:
-            return
-
+    def handle__file__IN_DELETE(_, path):
         # Correctness does not depend on this bump: it's an optimisation
         # that ensures we abandon any upload of this path ahead of us
         # in the queue
         bump_content_version(path)
         schedule_delete(path)
 
-    def handle_IN_IGNORED(wd, _, __):
+    def handle__dir__IN_IGNORED(wd, _):
         del wds_to_path[wd]
 
-    def handle_IN_MODIFY(_, __, path):
+    def handle__file__IN_MODIFY(_, path):
         bump_content_version(path)
 
-    def handle_IN_MOVED_FROM(_, is_dir, path):
+    def handle__dir__IN_MOVED_FROM(_, path):
         # Directory nesting not likely to be large
         def recursive_delete(prefix, directory):
             for child_name, child in list(directory['children'].items()):
@@ -292,22 +289,22 @@ def Syncer(
                 else:
                     recursive_delete(prefix + '/' + child_name, child)
 
-        if is_dir:
-            try:
-                cache_directory = layout_cache_directory(path)
-            except KeyError:
-                # We may be moving from something not yet watched
-                pass
-            else:
-                recursive_delete(path, cache_directory)
+        try:
+            cache_directory = layout_cache_directory(path)
+        except KeyError:
+            # We may be moving from something not yet watched
+            pass
         else:
-            schedule_delete(path)
+            recursive_delete(path, cache_directory)
 
-    def handle_IN_MOVED_TO(_, is_dir, path):
-        if is_dir:
-            ensure_watcher(path)
-        else:
-            schedule_upload(path)
+    def handle__file__IN_MOVED_FROM(_, path):
+        schedule_delete(path)
+
+    def handle__dir__IN_MOVED_TO(_, path):
+        ensure_watcher(path)
+
+    def handle__fike__IN_MOVED_TO(_, path):
+        schedule_upload(path)
 
     def get_content_version(path):
         return content_versions.setdefault(path, default=WeakReferenceableDict(version=0))
