@@ -142,7 +142,7 @@ def Syncer(
         nonlocal tasks
         nonlocal fd
         tasks = [
-            asyncio.create_task(upload())
+            asyncio.create_task(process_jobs())
             for i in range(0, concurrent_uploads)
         ]
 
@@ -265,7 +265,7 @@ def Syncer(
 
         yield True, last
 
-    async def upload():
+    async def process_jobs():
         while True:
             try:
                 job = await job_queue.get()
