@@ -33,7 +33,7 @@ libc.inotify_init.argtypes = []
 libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
 
 
-class CancelledUpload(Exception):
+class FileContentChanged(Exception):
     pass
 
 
@@ -273,7 +273,7 @@ def Syncer(
                     await flush_events(pathname)
 
                 if job['content_version_current'] != job['content_version_original']:
-                    raise CancelledUpload()
+                    raise FileContentChanged()
 
                 yield chunk
 
@@ -303,8 +303,8 @@ def Syncer(
             except Exception as exception:
                 if isinstance(exception, asyncio.CancelledError):
                     raise
-                if not isinstance(exception.__cause__, CancelledUpload):
-                    logger.exception('Exception during upload of %s', pathname)
+                if not isinstance(exception.__cause__, FileContentChanged):
+                    logger.exception('Exception during upload')
 
     parent_locals = locals()
 
