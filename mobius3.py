@@ -240,14 +240,10 @@ def Syncer(
         version_current = get_content_version(path)
         version_original = version_current.copy()
 
-        job_queue.put_nowait({
-            'function': upload,
-            'kwargs': {
-                'path': path,
-                'content_version_original': version_original,
-                'content_version_current': version_current,
-            }
-        })
+        async def function():
+            await upload(path, version_current, version_original)
+
+        job_queue.put_nowait(function)
 
     async def flush_events(path):
         flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
@@ -274,7 +270,7 @@ def Syncer(
             try:
                 job = await job_queue.get()
                 try:
-                    await job['function'](**job['kwargs'])
+                    await job()
                 finally:
                     job_queue.task_done()
 
