@@ -147,6 +147,10 @@ def Syncer(
         ]
 
         fd = libc.inotify_init()
+        latest_errno = ctypes.set_errno(0)
+        if latest_errno:
+            raise OSError(latest_errno, os.strerror(latest_errno))
+
         loop.add_reader(fd, handle)
         ensure_watcher(local_root)
 
