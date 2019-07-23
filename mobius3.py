@@ -292,7 +292,7 @@ def Syncer(
                 if isinstance(exception, asyncio.CancelledError):
                     raise
                 if not isinstance(exception.__cause__, FileContentChanged):
-                    logger.exception('Exception during upload')
+                    logger.exception('Exception during %s', job)
 
     async def file_body(job, pathname):
         with open(pathname, 'rb') as file:
