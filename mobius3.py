@@ -21,6 +21,7 @@ from fifolock import (
 from lowhaio import (
     Pool,
     buffered,
+    empty_async_iterator,
 )
 from lowhaio_aws_sigv4_unsigned_payload import (
     signed,
@@ -323,27 +324,21 @@ def Syncer(
                     yield chunk
 
         content_length = str(os.stat(path).st_size).encode()
-
-        async with get_lock(path)(Mutex):
-            code, _, body = await signed_request(
-                b'PUT', remote_url(path), body=file_body,
-                headers=((b'content-length', content_length),)
-            )
-            body_bytes = await buffered(body)
-
-        if code != b'200':
-            raise Exception(code, body_bytes)
+        await locked_request(b'PUT', path, body=file_body,
+                             headers=((b'content-length', content_length),))
 
     async def delete(path):
+        await locked_request(b'DELETE', path)
+
+    async def locked_request(method, path, headers=(), body=empty_async_iterator):
+        remote_url = remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
+
         async with get_lock(path)(Mutex):
-            code, _, body = await signed_request(b'DELETE', remote_url(path))
+            code, _, body = await signed_request(method, remote_url, headers=headers, body=body)
             body_bytes = await buffered(body)
 
         if code != b'200':
             raise Exception(code, body_bytes)
-
-    def remote_url(path):
-        return remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
 
     parent_locals = locals()
 
