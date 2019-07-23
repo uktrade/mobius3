@@ -120,7 +120,7 @@ def Syncer(
     # checked to see if they are the latest. If not there was as have been a
     # change to the filesystem, and another upload will be scheduled, so we
     # abort
-    path_versions = WeakValueDictionary()
+    content_versions = WeakValueDictionary()
 
     # The asyncio task pool that performs the uploads
     upload_tasks = []
@@ -225,24 +225,24 @@ def Syncer(
         ensure_watcher(path)
 
     def handle_IN_MODIFY(path):
-        bump_version(path)
+        bump_content_version(path)
 
-    def get_version(path):
-        return path_versions.setdefault(path, default=WeakReferenceableDict(version=0))
+    def get_content_version(path):
+        return content_versions.setdefault(path, default=WeakReferenceableDict(version=0))
 
-    def bump_version(path):
-        get_version(path)['version'] += 1
+    def bump_content_version(path):
+        get_content_version(path)['version'] += 1
 
     def get_lock(path):
         return path_locks.setdefault(path, default=FifoLock())
 
     def schedule_upload(path):
-        version = get_version(path)
+        version = get_content_version(path)
 
         job_queue.put_nowait({
             'path': path,
-            'version_original': version.copy(),
-            'version_current': version,
+            'content_version_original': version.copy(),
+            'content_version_current': version,
         })
 
     async def flush_events(path):
@@ -272,7 +272,7 @@ def Syncer(
                 if is_last:
                     await flush_events(pathname)
 
-                if job['version_current'] != job['version_original']:
+                if job['content_version_current'] != job['content_version_original']:
                     raise CancelledUpload()
 
                 yield chunk
