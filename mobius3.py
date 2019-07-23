@@ -265,18 +265,6 @@ def Syncer(
 
         yield True, last
 
-    async def file_body(job, pathname):
-        with open(pathname, 'rb') as file:
-
-            for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
-                if is_last:
-                    await flush_events(pathname)
-
-                if job['content_version_current'] != job['content_version_original']:
-                    raise FileContentChanged()
-
-                yield chunk
-
     async def upload():
         while True:
             try:
@@ -305,6 +293,18 @@ def Syncer(
                     raise
                 if not isinstance(exception.__cause__, FileContentChanged):
                     logger.exception('Exception during upload')
+
+    async def file_body(job, pathname):
+        with open(pathname, 'rb') as file:
+
+            for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
+                if is_last:
+                    await flush_events(pathname)
+
+                if job['content_version_current'] != job['content_version_original']:
+                    raise FileContentChanged()
+
+                yield chunk
 
     parent_locals = locals()
 
