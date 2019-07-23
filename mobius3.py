@@ -310,12 +310,11 @@ def Syncer(
 
                     yield chunk
 
-        remote_url = remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
         content_length = str(os.stat(path).st_size).encode()
 
         async with get_lock(path)(Mutex):
             code, _, body = await signed_request(
-                b'PUT', remote_url, body=file_body,
+                b'PUT', remote_url(path), body=file_body,
                 headers=((b'content-length', content_length),)
             )
             body_bytes = await buffered(body)
@@ -324,14 +323,15 @@ def Syncer(
             raise Exception(code, body_bytes)
 
     async def delete(path):
-        remote_url = remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
-
         async with get_lock(path)(Mutex):
-            code, _, body = await signed_request(b'DELETE', remote_url)
+            code, _, body = await signed_request(b'DELETE', remote_url(path))
             body_bytes = await buffered(body)
 
         if code != b'200':
             raise Exception(code, body_bytes)
+
+    def remote_url(path):
+        return remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
 
     parent_locals = locals()
 
