@@ -81,7 +81,8 @@ WATCHED_EVENTS = \
     InotifyFlags.IN_ONLYDIR | \
     InotifyFlags.IN_MODIFY | \
     InotifyFlags.IN_CLOSE_WRITE | \
-    InotifyFlags.IN_CREATE
+    InotifyFlags.IN_CREATE | \
+    InotifyFlags.IN_DELETE
 
 
 EVENT_HEADER = struct.Struct('iIII')
@@ -224,6 +225,13 @@ def Syncer(
     def handle_IN_CREATE(path):
         ensure_watcher(path)
 
+    def handle_IN_DELETE(path):
+        # Correctness does not depend on this bump: it's an optimisation
+        # that ensures we abandon any upload of this path ahead of us
+        # in the queue
+        bump_content_version(path)
+        schedule_delete(path)
+
     def handle_IN_MODIFY(path):
         bump_content_version(path)
 
@@ -242,6 +250,12 @@ def Syncer(
 
         async def function():
             await upload(path, version_current, version_original)
+
+        job_queue.put_nowait(function)
+
+    def schedule_delete(path):
+        async def function():
+            await delete(path)
 
         job_queue.put_nowait(function)
 
@@ -277,7 +291,10 @@ def Syncer(
             except Exception as exception:
                 if isinstance(exception, asyncio.CancelledError):
                     raise
-                if not isinstance(exception.__cause__, FileContentChanged):
+                if (
+                        not isinstance(exception, FileNotFoundError) and
+                        not isinstance(exception.__cause__, FileContentChanged)
+                ):
                     logger.exception('Exception during %s', job)
 
     async def upload(path, content_version_current, content_version_original):
@@ -301,6 +318,16 @@ def Syncer(
                 b'PUT', remote_url, body=file_body,
                 headers=((b'content-length', content_length),)
             )
+            body_bytes = await buffered(body)
+
+        if code != b'200':
+            raise Exception(code, body_bytes)
+
+    async def delete(path):
+        remote_url = remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
+
+        async with get_lock(path)(Mutex):
+            code, _, body = await signed_request(b'DELETE', remote_url)
             body_bytes = await buffered(body)
 
         if code != b'200':
