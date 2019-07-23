@@ -215,24 +215,30 @@ def Syncer(
                     break
 
                 try:
-                    handler(full_path)
+                    handler(wd, mask, full_path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
-    def handle_IN_CLOSE_WRITE(path):
+    def handle_IN_CLOSE_WRITE(_, __, path):
         schedule_upload(path)
 
-    def handle_IN_CREATE(path):
+    def handle_IN_CREATE(_, __, path):
         ensure_watcher(path)
 
-    def handle_IN_DELETE(path):
+    def handle_IN_DELETE(_, mask, path):
+        if mask & InotifyFlags.IN_ISDIR:
+            return
+
         # Correctness does not depend on this bump: it's an optimisation
         # that ensures we abandon any upload of this path ahead of us
         # in the queue
         bump_content_version(path)
         schedule_delete(path)
 
-    def handle_IN_MODIFY(path):
+    def handle_IN_IGNORED(wd, _, __):
+        del wds_to_path[wd]
+
+    def handle_IN_MODIFY(_, __, path):
         bump_content_version(path)
 
     def get_content_version(path):
