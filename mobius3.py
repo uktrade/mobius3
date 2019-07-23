@@ -2,7 +2,6 @@ import array
 import asyncio
 import ctypes
 import enum
-import errno
 import fcntl
 import termios
 import logging
@@ -28,9 +27,17 @@ from lowhaio_aws_sigv4_unsigned_payload import (
 )
 
 
-libc = ctypes.cdll.LoadLibrary('libc.so.6')
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
 libc.inotify_init.argtypes = []
 libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+
+
+def call_libc(func, *args):
+    value = func(*args)
+    latest_errno = ctypes.set_errno(0)
+    if latest_errno:
+        raise OSError(latest_errno, os.strerror(latest_errno))
+    return value
 
 
 class FileContentChanged(Exception):
@@ -147,17 +154,15 @@ def Syncer(
             for i in range(0, concurrent_uploads)
         ]
 
-        fd = libc.inotify_init()
+        fd = call_libc(libc.inotify_init)
         loop.add_reader(fd, handle)
         ensure_watcher(local_root)
 
     def ensure_watcher(path):
         try:
-            wd = libc.inotify_add_watch(fd, path.encode('utf-8'), WATCHED_EVENTS)
-        except OSError:
-            if OSError.errno == errno.ENOTDIR:
-                return
-            raise
+            wd = call_libc(libc.inotify_add_watch, fd, path.encode('utf-8'), WATCHED_EVENTS)
+        except (NotADirectoryError, FileNotFoundError):
+            return
 
         wds_to_path[wd] = path
 
