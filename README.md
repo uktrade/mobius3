@@ -48,9 +48,25 @@ If a file has been updated or deleted locally, any concurrent changes from S3 ar
 
 A simple polling mechanism is used to check for changes in S3: hence for large number of files/objects mobius3 may not be performant.
 
-However, every effort is made so that content of each file is not corrupted, i.e. files mid-way through being changed locally are _not_ uploaded until they stop being changed.
-
 Some of the above behaviours may change in future versions.
+
+
+### Concurrency
+
+Mid-upload, a file can could modified by a local process, so in this case a corrupt file could be uploaded to S3. To prevent this mobius3 uses the following algorithm for each upload.
+
+- An IN_CLOSE_WRITE event is received for a file, and we start the upload.
+- Just before the end of the upload, the final bytes of the file are read from disk.
+- A dummy "flush" file is written to the relavent directory.
+- Wait for the IN_CREATE event for this file. This ensures that any events since the final bytes were read have also been received.
+- If we did receive an IN_MODIFY event for the file, the file has been modified, and we do not upload the final bytes. Otherwise, we complete the upload.
+- Since IN_MODIFY was received, once the file has been closed will will receive an IN_CLOSE_WRITE, and we re-upload the file.
+
+An alternative to the above would be use a locking mechanism. However
+
+- other processes may not respect advisary locking;
+- the filesystem may not support mandatory locking;
+- we don't want to prevent other processes from progressing due to locking the file on upload: this would partially remove the benefits of the asynchronous nature of the syncing.
 
 
 ## Running tests
