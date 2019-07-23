@@ -24,8 +24,9 @@ setuptools.setup(
         'mobius3',
     ],
     install_requires=[
-        'lowhaio==0.0.79',
-        'lowhaio-aws-sigv4-unsigned-payload==0.0.4',
+        'fifolock>=0.0.20',
+        'lowhaio>=0.0.79',
+        'lowhaio-aws-sigv4-unsigned-payload>=0.0.4',
     ],
     test_suite='test',
 )

@@ -16,6 +16,9 @@ from weakref import (
     WeakValueDictionary,
 )
 
+from fifolock import (
+    FifoLock,
+)
 from lowhaio import (
     Pool,
     buffered,
@@ -30,12 +33,18 @@ libc.inotify_init.argtypes = []
 libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
 
 
-class CancelledUpload(Exception):
+class FileContentChanged(Exception):
     pass
 
 
 class WeakReferenceableDict(dict):
     pass
+
+
+class Mutex(asyncio.Future):
+    @staticmethod
+    def is_compatible(holds):
+        return not holds[Mutex]
 
 
 class InotifyFlags(enum.IntEnum):
@@ -111,7 +120,7 @@ def Syncer(
     # checked to see if they are the latest. If not there was as have been a
     # change to the filesystem, and another upload will be scheduled, so we
     # abort
-    path_versions = WeakValueDictionary()
+    content_versions = WeakValueDictionary()
 
     # The asyncio task pool that performs the uploads
     upload_tasks = []
@@ -119,6 +128,10 @@ def Syncer(
     # Before completing an upload, we force a flush of the event queue for
     # the uploads directory to ensure that we have processed any change events
     flushes = WeakValueDictionary()
+
+    # To prevent concurrent HTTP requests on the same files where order of
+    # receipt by S3 cannot be guarenteed, we wrap each request by a lock
+    path_locks = WeakValueDictionary()
 
     request, close_pool = get_pool()
     signed_request = signed(
@@ -212,20 +225,24 @@ def Syncer(
         ensure_watcher(path)
 
     def handle_IN_MODIFY(path):
-        bump_version(path)
+        bump_content_version(path)
 
-    def bump_version(path):
-        version = path_versions.setdefault(path, default=WeakReferenceableDict(version=0))
-        version['version'] += 1
-        return version
+    def get_content_version(path):
+        return content_versions.setdefault(path, default=WeakReferenceableDict(version=0))
+
+    def bump_content_version(path):
+        get_content_version(path)['version'] += 1
+
+    def get_lock(path):
+        return path_locks.setdefault(path, default=FifoLock())
 
     def schedule_upload(path):
-        version = bump_version(path)
+        version = get_content_version(path)
 
         job_queue.put_nowait({
             'path': path,
-            'version_original': version.copy(),
-            'version_current': version,
+            'content_version_original': version.copy(),
+            'content_version_current': version,
         })
 
     async def flush_events(path):
@@ -255,8 +272,8 @@ def Syncer(
                 if is_last:
                     await flush_events(pathname)
 
-                if job['version_current'] != job['version_original']:
-                    raise CancelledUpload()
+                if job['content_version_current'] != job['content_version_original']:
+                    raise FileContentChanged()
 
                 yield chunk
 
@@ -265,19 +282,19 @@ def Syncer(
             try:
                 job = await job_queue.get()
                 try:
-                    if job['version_current'] != job['version_original']:
-                        continue
                     pathname = job['path']
 
                     remote_url = remote_root + '/' + \
                         str(PurePosixPath(pathname).relative_to(local_root))
                     content_length = str(os.stat(pathname).st_size).encode()
 
-                    code, _, body = await signed_request(
-                        b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
-                        headers=((b'content-length', content_length),)
-                    )
-                    body_bytes = await buffered(body)
+                    async with get_lock(pathname)(Mutex):
+                        code, _, body = await signed_request(
+                            b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
+                            headers=((b'content-length', content_length),)
+                        )
+                        body_bytes = await buffered(body)
+
                     if code != b'200':
                         raise Exception(code, body_bytes)
                 finally:
@@ -286,8 +303,8 @@ def Syncer(
             except Exception as exception:
                 if isinstance(exception, asyncio.CancelledError):
                     raise
-                if not isinstance(exception.__cause__, CancelledUpload):
-                    logger.exception('Exception during upload of %s', pathname)
+                if not isinstance(exception.__cause__, FileContentChanged):
+                    logger.exception('Exception during upload')
 
     parent_locals = locals()
 
