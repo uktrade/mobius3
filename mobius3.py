@@ -16,6 +16,9 @@ from weakref import (
     WeakValueDictionary,
 )
 
+from fifolock import (
+    FifoLock,
+)
 from lowhaio import (
     Pool,
     buffered,
@@ -36,6 +39,12 @@ class CancelledUpload(Exception):
 
 class WeakReferenceableDict(dict):
     pass
+
+
+class Mutex(asyncio.Future):
+    @staticmethod
+    def is_compatible(holds):
+        return not holds[Mutex]
 
 
 class InotifyFlags(enum.IntEnum):
@@ -119,6 +128,10 @@ def Syncer(
     # Before completing an upload, we force a flush of the event queue for
     # the uploads directory to ensure that we have processed any change events
     flushes = WeakValueDictionary()
+
+    # To prevent concurrent HTTP requests on the same files where order of
+    # receipt by S3 cannot be guarenteed, we wrap each request by a lock
+    path_locks = WeakValueDictionary()
 
     request, close_pool = get_pool()
     signed_request = signed(
@@ -220,6 +233,9 @@ def Syncer(
     def bump_version(path):
         get_version(path)['version'] += 1
 
+    def get_lock(path):
+        return path_locks.setdefault(path, default=FifoLock())
+
     def schedule_upload(path):
         version = get_version(path)
 
@@ -274,11 +290,13 @@ def Syncer(
                         str(PurePosixPath(pathname).relative_to(local_root))
                     content_length = str(os.stat(pathname).st_size).encode()
 
-                    code, _, body = await signed_request(
-                        b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
-                        headers=((b'content-length', content_length),)
-                    )
-                    body_bytes = await buffered(body)
+                    async with get_lock(pathname)(Mutex):
+                        code, _, body = await signed_request(
+                            b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
+                            headers=((b'content-length', content_length),)
+                        )
+                        body_bytes = await buffered(body)
+
                     if code != b'200':
                         raise Exception(code, body_bytes)
                 finally:
