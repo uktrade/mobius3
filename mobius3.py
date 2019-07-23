@@ -265,26 +265,6 @@ def Syncer(
 
         job_queue.put_nowait(function)
 
-    async def flush_events(path):
-        flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
-        event = asyncio.Event()
-        flushes[str(flush_path)] = event
-        with open(str(flush_path), 'w'):
-            pass
-        await event.wait()
-
-    def with_is_last(iterable):
-        try:
-            last = next(iterable)
-        except StopIteration:
-            return
-
-        for val in iterable:
-            yield False, last
-            last = val
-
-        yield True, last
-
     async def process_jobs():
         while True:
             try:
@@ -304,12 +284,33 @@ def Syncer(
                     logger.exception('Exception during %s', job)
 
     async def upload(path, content_version_current, content_version_original):
+
+        async def flush_events():
+            flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
+            event = asyncio.Event()
+            flushes[str(flush_path)] = event
+            with open(str(flush_path), 'w'):
+                pass
+            await event.wait()
+
+        def with_is_last(iterable):
+            try:
+                last = next(iterable)
+            except StopIteration:
+                return
+
+            for val in iterable:
+                yield False, last
+                last = val
+
+            yield True, last
+
         async def file_body():
             with open(path, 'rb') as file:
 
                 for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
                     if is_last:
-                        await flush_events(path)
+                        await flush_events()
 
                     if content_version_current != content_version_original:
                         raise FileContentChanged()
