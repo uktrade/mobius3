@@ -237,14 +237,15 @@ def Syncer(
         return path_locks.setdefault(path, default=FifoLock())
 
     def schedule_upload(path):
-        version = get_content_version(path)
+        version_current = get_content_version(path)
+        version_original = version_current.copy()
 
         job_queue.put_nowait({
             'function': upload,
             'kwargs': {
                 'path': path,
-                'content_version_original': version.copy(),
-                'content_version_current': version,
+                'content_version_original': version_original,
+                'content_version_current': version_current,
             }
         })
 
