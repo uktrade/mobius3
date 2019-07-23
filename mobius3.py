@@ -123,7 +123,7 @@ def Syncer(
     content_versions = WeakValueDictionary()
 
     # The asyncio task pool that performs the uploads
-    upload_tasks = []
+    tasks = []
 
     # Before completing an upload, we force a flush of the event queue for
     # the uploads directory to ensure that we have processed any change events
@@ -139,9 +139,9 @@ def Syncer(
     )
 
     async def start():
-        nonlocal upload_tasks
+        nonlocal tasks
         nonlocal fd
-        upload_tasks = [
+        tasks = [
             asyncio.create_task(upload())
             for i in range(0, concurrent_uploads)
         ]
@@ -173,7 +173,7 @@ def Syncer(
         loop.remove_reader(fd)
         os.close(fd)
         await close_pool()
-        for task in upload_tasks:
+        for task in tasks:
             task.cancel()
         await asyncio.sleep(0)
 
