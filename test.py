@@ -123,6 +123,32 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_body(request, f'{directory_name}/{filename}'), b'some-bytes')
 
     @async_test
+    async def test_file_inside_nested_directory_immediate_after_previous_deleted(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        directory_1 = str(uuid.uuid4())
+        directory_2 = str(uuid.uuid4())
+        filename = str(uuid.uuid4())
+        os.mkdir('/s3-home-folder/' + directory_1)
+        os.mkdir('/s3-home-folder/' + directory_2)
+        shutil.rmtree('/s3-home-folder/' + directory_1)
+
+        with open(f'/s3-home-folder/{directory_2}/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, f'{directory_2}/{filename}'), b'some-bytes')
+
+    @async_test
     async def test_nested_file_inside_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
