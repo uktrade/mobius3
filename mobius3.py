@@ -81,7 +81,8 @@ WATCHED_EVENTS = \
     InotifyFlags.IN_ONLYDIR | \
     InotifyFlags.IN_MODIFY | \
     InotifyFlags.IN_CLOSE_WRITE | \
-    InotifyFlags.IN_CREATE
+    InotifyFlags.IN_CREATE | \
+    InotifyFlags.IN_DELETE
 
 
 EVENT_HEADER = struct.Struct('iIII')
@@ -123,7 +124,7 @@ def Syncer(
     content_versions = WeakValueDictionary()
 
     # The asyncio task pool that performs the uploads
-    upload_tasks = []
+    tasks = []
 
     # Before completing an upload, we force a flush of the event queue for
     # the uploads directory to ensure that we have processed any change events
@@ -139,10 +140,10 @@ def Syncer(
     )
 
     async def start():
-        nonlocal upload_tasks
+        nonlocal tasks
         nonlocal fd
-        upload_tasks = [
-            asyncio.create_task(upload())
+        tasks = [
+            asyncio.create_task(process_jobs())
             for i in range(0, concurrent_uploads)
         ]
 
@@ -173,7 +174,7 @@ def Syncer(
         loop.remove_reader(fd)
         os.close(fd)
         await close_pool()
-        for task in upload_tasks:
+        for task in tasks:
             task.cancel()
         await asyncio.sleep(0)
 
@@ -224,6 +225,13 @@ def Syncer(
     def handle_IN_CREATE(path):
         ensure_watcher(path)
 
+    def handle_IN_DELETE(path):
+        # Correctness does not depend on this bump: it's an optimisation
+        # that ensures we abandon any upload of this path ahead of us
+        # in the queue
+        bump_content_version(path)
+        schedule_delete(path)
+
     def handle_IN_MODIFY(path):
         bump_content_version(path)
 
@@ -237,13 +245,19 @@ def Syncer(
         return path_locks.setdefault(path, default=FifoLock())
 
     def schedule_upload(path):
-        version = get_content_version(path)
+        version_current = get_content_version(path)
+        version_original = version_current.copy()
 
-        job_queue.put_nowait({
-            'path': path,
-            'content_version_original': version.copy(),
-            'content_version_current': version,
-        })
+        async def function():
+            await upload(path, version_current, version_original)
+
+        job_queue.put_nowait(function)
+
+    def schedule_delete(path):
+        async def function():
+            await delete(path)
+
+        job_queue.put_nowait(function)
 
     async def flush_events(path):
         flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
@@ -265,46 +279,59 @@ def Syncer(
 
         yield True, last
 
-    async def file_body(job, pathname):
-        with open(pathname, 'rb') as file:
-
-            for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
-                if is_last:
-                    await flush_events(pathname)
-
-                if job['content_version_current'] != job['content_version_original']:
-                    raise FileContentChanged()
-
-                yield chunk
-
-    async def upload():
+    async def process_jobs():
         while True:
             try:
                 job = await job_queue.get()
                 try:
-                    pathname = job['path']
-
-                    remote_url = remote_root + '/' + \
-                        str(PurePosixPath(pathname).relative_to(local_root))
-                    content_length = str(os.stat(pathname).st_size).encode()
-
-                    async with get_lock(pathname)(Mutex):
-                        code, _, body = await signed_request(
-                            b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
-                            headers=((b'content-length', content_length),)
-                        )
-                        body_bytes = await buffered(body)
-
-                    if code != b'200':
-                        raise Exception(code, body_bytes)
+                    await job()
                 finally:
                     job_queue.task_done()
 
             except Exception as exception:
                 if isinstance(exception, asyncio.CancelledError):
                     raise
-                if not isinstance(exception.__cause__, FileContentChanged):
-                    logger.exception('Exception during upload')
+                if (
+                        not isinstance(exception, FileNotFoundError) and
+                        not isinstance(exception.__cause__, FileContentChanged)
+                ):
+                    logger.exception('Exception during %s', job)
+
+    async def upload(path, content_version_current, content_version_original):
+        async def file_body():
+            with open(path, 'rb') as file:
+
+                for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
+                    if is_last:
+                        await flush_events(path)
+
+                    if content_version_current != content_version_original:
+                        raise FileContentChanged()
+
+                    yield chunk
+
+        content_length = str(os.stat(path).st_size).encode()
+
+        async with get_lock(path)(Mutex):
+            code, _, body = await signed_request(
+                b'PUT', remote_url(path), body=file_body,
+                headers=((b'content-length', content_length),)
+            )
+            body_bytes = await buffered(body)
+
+        if code != b'200':
+            raise Exception(code, body_bytes)
+
+    async def delete(path):
+        async with get_lock(path)(Mutex):
+            code, _, body = await signed_request(b'DELETE', remote_url(path))
+            body_bytes = await buffered(body)
+
+        if code != b'200':
+            raise Exception(code, body_bytes)
+
+    def remote_url(path):
+        return remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
 
     parent_locals = locals()
 

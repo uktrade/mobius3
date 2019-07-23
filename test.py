@@ -229,6 +229,52 @@ class TestIntegration(unittest.TestCase):
         await await_upload()
         self.assertEqual(await object_body(request, filename), b'\x01' * 10000000)
 
+    @async_test
+    async def test_single_small_file_deleted_after_delay(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+
+        os.remove(f'/s3-home-folder/{filename}')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_code(request, filename), b'404')
+
+    @async_test
+    async def test_single_small_file_deleted_immediate(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        os.remove(f'/s3-home-folder/{filename}')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_code(request, filename), b'404')
+
 
 def create_directory(path):
     async def delete_dir():
