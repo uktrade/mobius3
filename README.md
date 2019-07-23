@@ -42,7 +42,7 @@ AWS Credentials are taken from the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KE
 
 ## Under the hood and limitations
 
-Renaming files or folders map to no atomic operation in S3, and conflicts are dealt with where S3 is always the source-of-truth. This means that with concurrent modifications or deletions to the same file(s) or folder(s) _data can be lost_ and the directory layout may get corrupted.
+Renaming files or folders map to no atomic operation in S3, and conflicts are dealt with where S3 is always the source-of-truth. This means that with concurrent modifications or deletions to the same file(s) or folder(s) by different clients _data can be lost_ and the directory layout may get corrupted.
 
 If a file has been updated or deleted locally, any concurrent changes from S3 are delayed for 60 seconds as a best-effort to avoid eventual consistency issues where S3 does not yet present a consistent view of latest changes.
 
