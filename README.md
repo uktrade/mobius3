@@ -57,7 +57,7 @@ Mid-upload, a file can could modified by a local process, so in this case a corr
 
 - An IN_CLOSE_WRITE event is received for a file, and we start the upload.
 - Just before the end of the upload, the final bytes of the file are read from disk.
-- A dummy "flush" file is written to the relavent directory.
+- A dummy "flush" file is written to the relevant directory.
 - Wait for the IN_CREATE event for this file. This ensures that any events since the final bytes were read have also been received.
 - If we did receive an IN_MODIFY event for the file, the file has been modified, and we do not upload the final bytes. Otherwise, we complete the upload.
 - Since IN_MODIFY was received, once the file has been closed will will receive an IN_CLOSE_WRITE, and we re-upload the file.
