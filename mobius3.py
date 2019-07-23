@@ -293,8 +293,7 @@ def Syncer(
 
                     yield chunk
 
-        remote_url = remote_root + '/' + \
-            str(PurePosixPath(path).relative_to(local_root))
+        remote_url = remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
         content_length = str(os.stat(path).st_size).encode()
 
         async with get_lock(path)(Mutex):
