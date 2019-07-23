@@ -90,7 +90,9 @@ WATCHED_EVENTS = \
     InotifyFlags.IN_MODIFY | \
     InotifyFlags.IN_CLOSE_WRITE | \
     InotifyFlags.IN_CREATE | \
-    InotifyFlags.IN_DELETE
+    InotifyFlags.IN_DELETE | \
+    InotifyFlags.IN_MOVED_TO | \
+    InotifyFlags.IN_MOVED_FROM
 
 
 EVENT_HEADER = struct.Struct('iIII')
@@ -142,10 +144,43 @@ def Syncer(
     # receipt by S3 cannot be guarenteed, we wrap each request by a lock
     path_locks = WeakValueDictionary()
 
+    # A cache of the layout of objects used for renames
+    layout_cache = {
+        'type': 'directory',
+        'children': {},
+    }
+
     request, close_pool = get_pool()
     signed_request = signed(
         request, credentials=get_credentials, service='s3', region=remote_region
     )
+
+    def add_file_to_layout_cache(path):
+        path_posix = PurePosixPath(path)
+        directory = layout_cache
+        for parent in reversed(list(path_posix.parents)):
+            directory = directory['children'].setdefault(parent.name, {
+                'type': 'directory',
+                'children': {},
+            })
+        directory['children'][path_posix.name] = {
+            'type': 'file',
+        }
+
+    def remove_file_from_layout_cache(path):
+        path_posix = PurePosixPath(path)
+        directory = layout_cache
+        for parent in reversed(list(path_posix.parents)):
+            directory = directory['children'][parent.name]
+
+        del directory['children'][path_posix.name]
+
+    def layout_cache_directory(path):
+        path_posix = PurePosixPath(path)
+        directory = layout_cache
+        for parent in reversed(list(path_posix.parents)):
+            directory = directory['children'][parent.name]
+        return directory['children'][path_posix.name]
 
     async def start():
         nonlocal tasks
@@ -247,6 +282,32 @@ def Syncer(
     def handle_IN_MODIFY(_, __, path):
         bump_content_version(path)
 
+    def handle_IN_MOVED_FROM(_, mask, path):
+        # Directory nesting not likely to be large
+        def recursive_delete(prefix, directory):
+            for child_name, child in list(directory['children'].items()):
+                if child['type'] == 'file':
+                    schedule_delete(prefix + '/' + child_name)
+                else:
+                    recursive_delete(prefix + '/' + child_name, child)
+
+        if mask & InotifyFlags.IN_ISDIR:
+            try:
+                cache_directory = layout_cache_directory(path)
+            except KeyError:
+                # We may be moving from something not yet watched
+                pass
+            else:
+                recursive_delete(path, cache_directory)
+        else:
+            schedule_delete(path)
+
+    def handle_IN_MOVED_TO(_, mask, path):
+        if mask & InotifyFlags.IN_ISDIR:
+            ensure_watcher(path)
+        else:
+            schedule_upload(path)
+
     def get_content_version(path):
         return content_versions.setdefault(path, default=WeakReferenceableDict(version=0))
 
@@ -263,12 +324,14 @@ def Syncer(
         async def function():
             await upload(path, version_current, version_original)
 
+        add_file_to_layout_cache(path)
         job_queue.put_nowait(function)
 
     def schedule_delete(path):
         async def function():
             await delete(path)
 
+        remove_file_from_layout_cache(path)
         job_queue.put_nowait(function)
 
     async def process_jobs():
@@ -290,7 +353,6 @@ def Syncer(
                     logger.exception('Exception during %s', job)
 
     async def upload(path, content_version_current, content_version_original):
-
         async def flush_events():
             flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
             event = asyncio.Event()

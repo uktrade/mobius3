@@ -361,6 +361,64 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(await object_body(request, f'{dirname}/{filename}'), b'some-bytes')
 
+    @async_test
+    async def test_file_in_renamed_directory_after_delay(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        dirname_1 = str(uuid.uuid4())
+        dirname_2 = str(uuid.uuid4())
+
+        os.mkdir(f'/s3-home-folder/{dirname_1}')
+        filename = str(uuid.uuid4())
+
+        with open(f'/s3-home-folder/{dirname_1}/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+
+        os.rename(f'/s3-home-folder/{dirname_1}', f'/s3-home-folder/{dirname_2}')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_code(request, f'{dirname_1}/{filename}'), b'404')
+        self.assertEqual(await object_body(request, f'{dirname_2}/{filename}'), b'some-bytes')
+
+    @async_test
+    async def test_file_in_renamed_directory_immediate(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        dirname_1 = str(uuid.uuid4())
+        dirname_2 = str(uuid.uuid4())
+
+        os.mkdir(f'/s3-home-folder/{dirname_1}')
+        filename = str(uuid.uuid4())
+
+        with open(f'/s3-home-folder/{dirname_1}/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        os.rename(f'/s3-home-folder/{dirname_1}', f'/s3-home-folder/{dirname_2}')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_code(request, f'{dirname_1}/{filename}'), b'404')
+        self.assertEqual(await object_body(request, f'{dirname_2}/{filename}'), b'some-bytes')
+
 
 def create_directory(path):
     async def delete_dir():
