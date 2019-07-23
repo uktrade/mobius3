@@ -282,8 +282,6 @@ def Syncer(
             try:
                 job = await job_queue.get()
                 try:
-                    if job['version_current'] != job['version_original']:
-                        continue
                     pathname = job['path']
 
                     remote_url = remote_root + '/' + \
