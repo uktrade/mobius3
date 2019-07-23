@@ -62,7 +62,7 @@ Mid-upload, a file can could modified by a local process, so in this case a corr
 - If we did receive an IN_MODIFY event for the file, the file has been modified, and we do not upload the final bytes. Otherwise, we complete the upload.
 - Since IN_MODIFY was received, once the file has been closed will will receive an IN_CLOSE_WRITE, and we re-upload the file.
 
-An alternative to the above would be use a locking mechanism. However
+An alternative to the above would be use a filesystem locking mechanism. However
 
 - other processes may not respect advisary locking;
 - the filesystem may not support mandatory locking;
