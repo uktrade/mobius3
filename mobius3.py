@@ -240,9 +240,12 @@ def Syncer(
         version = get_content_version(path)
 
         job_queue.put_nowait({
-            'path': path,
-            'content_version_original': version.copy(),
-            'content_version_current': version,
+            'function': upload,
+            'kwargs': {
+                'path': path,
+                'content_version_original': version.copy(),
+                'content_version_current': version,
+            }
         })
 
     async def flush_events(path):
@@ -270,7 +273,7 @@ def Syncer(
             try:
                 job = await job_queue.get()
                 try:
-                    await upload(job)
+                    await job['function'](**job['kwargs'])
                 finally:
                     job_queue.task_done()
 
@@ -280,34 +283,32 @@ def Syncer(
                 if not isinstance(exception.__cause__, FileContentChanged):
                     logger.exception('Exception during %s', job)
 
-    async def upload(job):
-        pathname = job['path']
+    async def upload(path, content_version_current, content_version_original):
+        async def file_body():
+            with open(path, 'rb') as file:
+
+                for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
+                    if is_last:
+                        await flush_events(path)
+
+                    if content_version_current != content_version_original:
+                        raise FileContentChanged()
+
+                    yield chunk
 
         remote_url = remote_root + '/' + \
-            str(PurePosixPath(pathname).relative_to(local_root))
-        content_length = str(os.stat(pathname).st_size).encode()
+            str(PurePosixPath(path).relative_to(local_root))
+        content_length = str(os.stat(path).st_size).encode()
 
-        async with get_lock(pathname)(Mutex):
+        async with get_lock(path)(Mutex):
             code, _, body = await signed_request(
-                b'PUT', remote_url, body=file_body, body_args=(job, pathname,),
+                b'PUT', remote_url, body=file_body,
                 headers=((b'content-length', content_length),)
             )
             body_bytes = await buffered(body)
 
         if code != b'200':
             raise Exception(code, body_bytes)
-
-    async def file_body(job, pathname):
-        with open(pathname, 'rb') as file:
-
-            for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
-                if is_last:
-                    await flush_events(pathname)
-
-                if job['content_version_current'] != job['content_version_original']:
-                    raise FileContentChanged()
-
-                yield chunk
 
     parent_locals = locals()
 
