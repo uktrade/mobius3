@@ -124,13 +124,13 @@ def Syncer(
     # Uploads are initiated in the order received
     job_queue = asyncio.Queue()
 
-    # A path -> version dict is maintained during queues and uploads. When a
-    # path is scheduled to be uploaded, its version is incremented. Before,
-    # during, and most importantly after the last read of data for an upload,
-    # but _before_ its uploaded, the versions of the path, and its parents are
-    # checked to see if they are the latest. If not there was as have been a
-    # change to the filesystem, and another upload will be scheduled, so we
-    # abort
+    # A path -> content version dict is maintained during queues and uploads,
+    # and incremented on every modification of a file. When a path is
+    # scheduled to be uploaded, its version is copied. After the last read of
+    # data for an upload, but before it's uploaded, the copied version of the
+    # path is compared to the current version. If this is different, there was
+    # a change to the file contents, we know another upload will be scheduled,
+    # so we abort the current upload
     content_versions = WeakValueDictionary()
 
     # The asyncio task pool that performs the uploads
