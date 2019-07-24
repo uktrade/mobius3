@@ -1,29 +1,23 @@
 version: 2
 jobs:
   build:
-    docker:
-      # Test and code run in _other_ docker containers, so mostly doesn't matter
-      - image: python:3.7.2
+    # To allow volume mount to extract coverage
+    machine:
+      image: ubuntu-1604:201903-01
     steps:
       - checkout
       - run:
-          name: Install Docker client
+          name: Install code coverage reporter
           command: |
-            set -x
-            VER="17.03.0-ce"
-            curl -L -o /tmp/docker-$VER.tgz https://get.docker.com/builds/Linux/x86_64/docker-$VER.tgz
-            tar -xz -C /tmp -f /tmp/docker-$VER.tgz
-            mv /tmp/docker/* /usr/bin
-      - run:
-          name: Install docker-compose
-          command: |
-            set -x
-            curl -L https://github.com/docker/compose/releases/download/1.22.0/docker-compose-`uname -s`-`uname -m` > /usr/local/bin/docker-compose
-            chmod +x /usr/local/bin/docker-compose
-      - setup_remote_docker
+            curl -L https://codeclimate.com/downloads/test-reporter/test-reporter-latest-linux-amd64 > ./cc-test-reporter
       - run:
           name: Run tests
           command: |
             set -x
             docker-compose build
-            docker-compose run --rm test python3 setup.py test
+            ./cc-test-reporter before-build
+            touch coverage.xml
+            docker-compose run --rm --volume=${PWD}/coverage.xml:/coverage.xml test sh test_with_coverage.sh
+            # Suspect that combining coverage reports converts to absolute paths, which are not found in host
+            sed -i 's/filename="\//filename="/g' coverage.xml
+            ./cc-test-reporter after-build --exit-code $?
