@@ -113,6 +113,8 @@ def Syncer(
     loop = asyncio.get_running_loop()
     logger = logging.getLogger('mobius3')
 
+    local_root = PurePosixPath(local_root)
+
     # The file descriptor returned from inotify_init
     fd = None
 
@@ -159,31 +161,28 @@ def Syncer(
     )
 
     def add_file_to_tree_cache(path):
-        path_posix = PurePosixPath(path)
         directory = tree_cache_root
-        for parent in reversed(list(path_posix.parents)):
+        for parent in reversed(list(path.parents)):
             directory = directory['children'].setdefault(parent.name, {
                 'type': 'directory',
                 'children': {},
             })
-        directory['children'][path_posix.name] = {
+        directory['children'][path.name] = {
             'type': 'file',
         }
 
     def remove_file_from_tree_cache(path):
-        path_posix = PurePosixPath(path)
         directory = tree_cache_root
-        for parent in reversed(list(path_posix.parents)):
+        for parent in reversed(list(path.parents)):
             directory = directory['children'][parent.name]
 
-        del directory['children'][path_posix.name]
+        del directory['children'][path.name]
 
     def tree_cache_directory(path):
-        path_posix = PurePosixPath(path)
         directory = tree_cache_root
-        for parent in reversed(list(path_posix.parents)):
+        for parent in reversed(list(path.parents)):
             directory = directory['children'][parent.name]
-        return directory['children'][path_posix.name]
+        return directory['children'][path.name]
 
     async def start():
         nonlocal tasks
@@ -207,7 +206,7 @@ def Syncer(
 
     def watch_and_upload_directory(path):
         try:
-            wd = call_libc(libc.inotify_add_watch, fd, path.encode('utf-8'), WATCHED_EVENTS)
+            wd = call_libc(libc.inotify_add_watch, fd, str(path).encode('utf-8'), WATCHED_EVENTS)
         except (NotADirectoryError, FileNotFoundError):
             return
 
@@ -217,19 +216,19 @@ def Syncer(
         # already been created
         for root, dirs, files in os.walk(path):
             for file in files:
-                schedule_upload(os.path.join(root, file))
+                schedule_upload(PurePosixPath(root) / file)
 
             for directory in dirs:
-                watch_and_upload_directory(os.path.join(root, directory))
+                watch_and_upload_directory(PurePosixPath(root) / directory)
 
     def remote_delete_directory(path):
         # Directory nesting not likely to be large
         def recursive_delete(prefix, directory):
             for child_name, child in list(directory['children'].items()):
                 if child['type'] == 'file':
-                    schedule_delete(prefix + '/' + child_name)
+                    schedule_delete(prefix / child_name)
                 else:
-                    recursive_delete(prefix + '/' + child_name, child)
+                    recursive_delete(prefix / child_name, child)
 
         try:
             cache_directory = tree_cache_directory(path)
@@ -252,12 +251,12 @@ def Syncer(
         while offset < len(raw_bytes):
             wd, mask, _, length = EVENT_HEADER.unpack_from(raw_bytes, offset)
             offset += EVENT_HEADER.size
-            path = raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8')
+            path = PurePosixPath(raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8'))
             offset += length
 
-            full_path = wds_to_path[wd] + '/' + path
+            full_path = wds_to_path[wd] / path
 
-            if path.startswith(flush_file_root):
+            if path.name.startswith(flush_file_root):
                 try:
                     flush = flushes[full_path]
                 except KeyError:
@@ -354,12 +353,12 @@ def Syncer(
 
     async def upload(path, content_version_current, content_version_original):
         async def flush_events():
-            flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
+            flush_path = path.parent / (flush_file_root + uuid.uuid4().hex)
             event = asyncio.Event()
-            flushes[str(flush_path)] = event
-            with open(str(flush_path), 'w'):
+            flushes[flush_path] = event
+            with open(flush_path, 'w'):
                 pass
-            os.remove(str(flush_path))
+            os.remove(flush_path)
             await event.wait()
 
         def with_is_last(iterable):
@@ -394,7 +393,7 @@ def Syncer(
         await locked_request(b'DELETE', path)
 
     async def locked_request(method, path, headers=(), body=empty_async_iterator):
-        remote_url = remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
+        remote_url = remote_root + '/' + str(path.relative_to(local_root))
 
         async with get_lock(path)(Mutex):
             code, _, body = await signed_request(method, remote_url, headers=headers, body=body)
