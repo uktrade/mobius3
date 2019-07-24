@@ -192,7 +192,7 @@ def Syncer(
 
         fd = call_libc(libc.inotify_init)
         loop.add_reader(fd, read_events)
-        ensure_watcher(local_root)
+        watch_and_upload_directory(local_root)
 
     async def stop():
         loop.remove_reader(fd)
@@ -202,7 +202,7 @@ def Syncer(
             task.cancel()
         await asyncio.sleep(0)
 
-    def ensure_watcher(path):
+    def watch_and_upload_directory(path):
         try:
             wd = call_libc(libc.inotify_add_watch, fd, path.encode('utf-8'), WATCHED_EVENTS)
         except (NotADirectoryError, FileNotFoundError):
@@ -217,7 +217,7 @@ def Syncer(
                 schedule_upload(os.path.join(root, file))
 
             for directory in dirs:
-                ensure_watcher(os.path.join(root, directory))
+                watch_and_upload_directory(os.path.join(root, directory))
 
     def read_events():
         FIONREAD_output = array.array('i', [0])
@@ -260,7 +260,7 @@ def Syncer(
         schedule_upload(path)
 
     def handle__dir__IN_CREATE(_, path):
-        ensure_watcher(path)
+        watch_and_upload_directory(path)
 
     def handle__file__IN_DELETE(_, path):
         # Correctness does not depend on this bump: it's an optimisation
@@ -296,7 +296,7 @@ def Syncer(
         schedule_delete(path)
 
     def handle__dir__IN_MOVED_TO(_, path):
-        ensure_watcher(path)
+        watch_and_upload_directory(path)
 
     def handle__file__IN_MOVED_TO(_, path):
         schedule_upload(path)
