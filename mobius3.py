@@ -144,8 +144,10 @@ def Syncer(
     # receipt by S3 cannot be guarenteed, we wrap each request by a lock
     path_locks = WeakValueDictionary()
 
-    # A cache of the layout of objects used for renames
-    layout_cache = {
+    # A cache of the file tree is maintained. Used for renames, since we only
+    # get notified of renames _after_ they have happened, we need a way to
+    # know what we think is on S3 in order to DELETE them
+    tree_cache_root = {
         'type': 'directory',
         'children': {},
     }
@@ -155,9 +157,9 @@ def Syncer(
         request, credentials=get_credentials, service='s3', region=remote_region
     )
 
-    def add_file_to_layout_cache(path):
+    def add_file_to_tree_cache(path):
         path_posix = PurePosixPath(path)
-        directory = layout_cache
+        directory = tree_cache_root
         for parent in reversed(list(path_posix.parents)):
             directory = directory['children'].setdefault(parent.name, {
                 'type': 'directory',
@@ -167,17 +169,17 @@ def Syncer(
             'type': 'file',
         }
 
-    def remove_file_from_layout_cache(path):
+    def remove_file_from_tree_cache(path):
         path_posix = PurePosixPath(path)
-        directory = layout_cache
+        directory = tree_cache_root
         for parent in reversed(list(path_posix.parents)):
             directory = directory['children'][parent.name]
 
         del directory['children'][path_posix.name]
 
-    def layout_cache_directory(path):
+    def tree_cache_directory(path):
         path_posix = PurePosixPath(path)
-        directory = layout_cache
+        directory = tree_cache_root
         for parent in reversed(list(path_posix.parents)):
             directory = directory['children'][parent.name]
         return directory['children'][path_posix.name]
@@ -229,7 +231,7 @@ def Syncer(
                     recursive_delete(prefix + '/' + child_name, child)
 
         try:
-            cache_directory = layout_cache_directory(path)
+            cache_directory = tree_cache_directory(path)
         except KeyError:
             # We may be moving from or deleting something not yet watched,
             # in which case we leave S3 as it is. There may be file(s) in
@@ -323,14 +325,14 @@ def Syncer(
         async def function():
             await upload(path, version_current, version_original)
 
-        add_file_to_layout_cache(path)
+        add_file_to_tree_cache(path)
         job_queue.put_nowait(function)
 
     def schedule_delete(path):
         async def function():
             await delete(path)
 
-        remove_file_from_layout_cache(path)
+        remove_file_from_tree_cache(path)
         job_queue.put_nowait(function)
 
     async def process_jobs():
