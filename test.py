@@ -813,7 +813,7 @@ class TestEndToEnd(unittest.TestCase):
             except ProcessLookupError:
                 pass
 
-        install_mobius3 = await asyncio.create_subprocess_exec('python3', 'setup.py', 'install')
+        install_mobius3 = await asyncio.create_subprocess_exec('python3', 'setup.py', 'develop')
         self.add_async_cleanup(terminate, install_mobius3)
         await install_mobius3.wait()
 
