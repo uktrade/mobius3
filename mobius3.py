@@ -258,7 +258,7 @@ def Syncer(
                 try:
                     flush = flushes[full_path]
                 except KeyError:
-                    continue
+                    pass
                 else:
                     flush.set()
                     continue
@@ -356,6 +356,7 @@ def Syncer(
             flushes[str(flush_path)] = event
             with open(str(flush_path), 'w'):
                 pass
+            os.remove(str(flush_path))
             await event.wait()
 
         def with_is_last(iterable):
