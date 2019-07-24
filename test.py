@@ -765,6 +765,36 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_body(request, f'{dirname}/{filename_1}'), b'some-bytes')
         self.assertEqual(await object_body(request, f'{dirname}/{filename_2}'), b'more-bytes')
 
+    @async_test
+    async def test_file_created_after_overflow(self):
+
+        max_queued_events = 16384
+
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename_1 = str(uuid.uuid4())
+        filename_2 = str(uuid.uuid4())
+
+        for _ in range(0, max_queued_events):
+            with open(f'/s3-home-folder/{filename_1}', 'wb') as file:
+                file.write(b'some-bytes')
+            os.remove(f'/s3-home-folder/{filename_1}')
+
+        with open(f'/s3-home-folder/{filename_2}', 'wb') as file:
+            file.write(b'more-bytes')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename_2), b'more-bytes')
+
 
 def create_directory(path):
     async def delete_dir():

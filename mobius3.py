@@ -72,7 +72,7 @@ class InotifyFlags(enum.IntEnum):
 
     # Events sent by the kernel without explicitly watching for them
     # IN_UNMOUNT = 0x00002000
-    # IN_Q_OVERFLOW = 0x00004000
+    IN_Q_OVERFLOW = 0x00004000
     IN_IGNORED = 0x00008000
 
     # Flags
@@ -186,23 +186,37 @@ def Syncer(
 
     async def start():
         nonlocal tasks
-        nonlocal fd
         tasks = [
             asyncio.create_task(process_jobs())
             for i in range(0, concurrent_uploads)
         ]
+        start_inotify()
 
+    def start_inotify():
+        nonlocal wds_to_path
+        nonlocal tree_cache_root
+        nonlocal job_queue
+        nonlocal fd
+        wds_to_path = {}
+        tree_cache_root = {
+            'type': 'directory',
+            'children': {},
+        }
+        job_queue = asyncio.Queue()
         fd = call_libc(libc.inotify_init)
         loop.add_reader(fd, read_events)
         watch_and_upload_directory(local_root)
 
     async def stop():
-        loop.remove_reader(fd)
-        os.close(fd)
+        stop_inotify()
         await close_pool()
         for task in tasks:
             task.cancel()
         await asyncio.sleep(0)
+
+    def stop_inotify():
+        loop.remove_reader(fd)
+        os.close(fd)
 
     def watch_and_upload_directory(path):
         try:
@@ -255,6 +269,11 @@ def Syncer(
             offset += EVENT_HEADER.size
             path = PurePosixPath(raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8'))
             offset += length
+
+            if mask & InotifyFlags.IN_Q_OVERFLOW:
+                stop_inotify()
+                start_inotify()
+                continue
 
             full_path = wds_to_path[wd] / path
 
@@ -340,7 +359,9 @@ def Syncer(
 
     async def process_jobs():
         while True:
-            job = await job_queue.get()
+            # We might restart and create a new queue-mid job
+            original_job_queue = job_queue
+            job = await original_job_queue.get()
             try:
                 await job()
             except Exception as exception:
@@ -352,7 +373,7 @@ def Syncer(
                 ):
                     logger.exception('Exception during %s', job)
             finally:
-                job_queue.task_done()
+                original_job_queue.task_done()
 
     async def upload(path, content_version_current, content_version_original):
         async def flush_events():
