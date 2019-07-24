@@ -15,6 +15,12 @@ These properties make mobius3 similar to a Dropbox or Google Drive client. Under
 > Work in progress. This README is a rough design spec.
 
 
+## Installation
+
+```bash
+pip install mobius3
+```
+
 ## Usage
 
 mobius3 can be used a standalone command-line application
