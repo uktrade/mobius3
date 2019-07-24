@@ -21,6 +21,7 @@ from fifolock import (
 from lowhaio import (
     Pool,
     buffered,
+    empty_async_iterator,
 )
 from lowhaio_aws_sigv4_unsigned_payload import (
     signed,
@@ -89,7 +90,9 @@ WATCHED_EVENTS = \
     InotifyFlags.IN_MODIFY | \
     InotifyFlags.IN_CLOSE_WRITE | \
     InotifyFlags.IN_CREATE | \
-    InotifyFlags.IN_DELETE
+    InotifyFlags.IN_DELETE | \
+    InotifyFlags.IN_MOVED_TO | \
+    InotifyFlags.IN_MOVED_FROM
 
 
 EVENT_HEADER = struct.Struct('iIII')
@@ -141,10 +144,43 @@ def Syncer(
     # receipt by S3 cannot be guarenteed, we wrap each request by a lock
     path_locks = WeakValueDictionary()
 
+    # A cache of the layout of objects used for renames
+    layout_cache = {
+        'type': 'directory',
+        'children': {},
+    }
+
     request, close_pool = get_pool()
     signed_request = signed(
         request, credentials=get_credentials, service='s3', region=remote_region
     )
+
+    def add_file_to_layout_cache(path):
+        path_posix = PurePosixPath(path)
+        directory = layout_cache
+        for parent in reversed(list(path_posix.parents)):
+            directory = directory['children'].setdefault(parent.name, {
+                'type': 'directory',
+                'children': {},
+            })
+        directory['children'][path_posix.name] = {
+            'type': 'file',
+        }
+
+    def remove_file_from_layout_cache(path):
+        path_posix = PurePosixPath(path)
+        directory = layout_cache
+        for parent in reversed(list(path_posix.parents)):
+            directory = directory['children'][parent.name]
+
+        del directory['children'][path_posix.name]
+
+    def layout_cache_directory(path):
+        path_posix = PurePosixPath(path)
+        directory = layout_cache
+        for parent in reversed(list(path_posix.parents)):
+            directory = directory['children'][parent.name]
+        return directory['children'][path_posix.name]
 
     async def start():
         nonlocal tasks
@@ -213,38 +249,62 @@ def Syncer(
                     continue
 
             flags = [flag for flag in InotifyFlags.__members__.values() if flag & mask]
+            item_type = 'dir' if mask & InotifyFlags.IN_ISDIR else 'file'
             for flag in flags:
                 try:
-                    handler = parent_locals[f'handle_{flag.name}']
+                    handler = parent_locals[f'handle__{item_type}__{flag.name}']
                 except KeyError:
-                    break
+                    continue
 
                 try:
-                    handler(wd, mask, full_path)
+                    handler(wd, full_path)
                 except Exception:
                     logger.exception('Exception during handler %s', path)
 
-    def handle_IN_CLOSE_WRITE(_, __, path):
+    def handle__file__IN_CLOSE_WRITE(_, path):
         schedule_upload(path)
 
-    def handle_IN_CREATE(_, __, path):
+    def handle__dir__IN_CREATE(_, path):
         ensure_watcher(path)
 
-    def handle_IN_DELETE(_, mask, path):
-        if mask & InotifyFlags.IN_ISDIR:
-            return
-
+    def handle__file__IN_DELETE(_, path):
         # Correctness does not depend on this bump: it's an optimisation
         # that ensures we abandon any upload of this path ahead of us
         # in the queue
         bump_content_version(path)
         schedule_delete(path)
 
-    def handle_IN_IGNORED(wd, _, __):
+    def handle__dir__IN_IGNORED(wd, _):
         del wds_to_path[wd]
 
-    def handle_IN_MODIFY(_, __, path):
+    def handle__file__IN_MODIFY(_, path):
         bump_content_version(path)
+
+    def handle__dir__IN_MOVED_FROM(_, path):
+        # Directory nesting not likely to be large
+        def recursive_delete(prefix, directory):
+            for child_name, child in list(directory['children'].items()):
+                if child['type'] == 'file':
+                    schedule_delete(prefix + '/' + child_name)
+                else:
+                    recursive_delete(prefix + '/' + child_name, child)
+
+        try:
+            cache_directory = layout_cache_directory(path)
+        except KeyError:
+            # We may be moving from something not yet watched
+            pass
+        else:
+            recursive_delete(path, cache_directory)
+
+    def handle__file__IN_MOVED_FROM(_, path):
+        schedule_delete(path)
+
+    def handle__dir__IN_MOVED_TO(_, path):
+        ensure_watcher(path)
+
+    def handle__fike__IN_MOVED_TO(_, path):
+        schedule_upload(path)
 
     def get_content_version(path):
         return content_versions.setdefault(path, default=WeakReferenceableDict(version=0))
@@ -262,12 +322,14 @@ def Syncer(
         async def function():
             await upload(path, version_current, version_original)
 
+        add_file_to_layout_cache(path)
         job_queue.put_nowait(function)
 
     def schedule_delete(path):
         async def function():
             await delete(path)
 
+        remove_file_from_layout_cache(path)
         job_queue.put_nowait(function)
 
     async def process_jobs():
@@ -289,7 +351,6 @@ def Syncer(
                     logger.exception('Exception during %s', job)
 
     async def upload(path, content_version_current, content_version_original):
-
         async def flush_events():
             flush_path = PurePosixPath(path).parent / (flush_file_root + uuid.uuid4().hex)
             event = asyncio.Event()
@@ -323,27 +384,21 @@ def Syncer(
                     yield chunk
 
         content_length = str(os.stat(path).st_size).encode()
-
-        async with get_lock(path)(Mutex):
-            code, _, body = await signed_request(
-                b'PUT', remote_url(path), body=file_body,
-                headers=((b'content-length', content_length),)
-            )
-            body_bytes = await buffered(body)
-
-        if code != b'200':
-            raise Exception(code, body_bytes)
+        await locked_request(b'PUT', path, body=file_body,
+                             headers=((b'content-length', content_length),))
 
     async def delete(path):
+        await locked_request(b'DELETE', path)
+
+    async def locked_request(method, path, headers=(), body=empty_async_iterator):
+        remote_url = remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
+
         async with get_lock(path)(Mutex):
-            code, _, body = await signed_request(b'DELETE', remote_url(path))
+            code, _, body = await signed_request(method, remote_url, headers=headers, body=body)
             body_bytes = await buffered(body)
 
         if code != b'200':
             raise Exception(code, body_bytes)
-
-    def remote_url(path):
-        return remote_root + '/' + str(PurePosixPath(path).relative_to(local_root))
 
     parent_locals = locals()
 
