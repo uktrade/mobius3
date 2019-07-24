@@ -144,9 +144,9 @@ def Syncer(
     # receipt by S3 cannot be guarenteed, we wrap each request by a lock
     path_locks = WeakValueDictionary()
 
-    # A cache of the file tree is maintained. Used for renames, since we only
-    # get notified of renames _after_ they have happened, we need a way to
-    # know what we think is on S3 in order to DELETE them
+    # A cache of the file tree is maintained. Used for directory renames: we
+    # only get notified of renames _after_ they have happened, we need a way
+    # to know what objects are on S3 in order to DELETE them
     tree_cache_root = {
         'type': 'directory',
         'children': {},
