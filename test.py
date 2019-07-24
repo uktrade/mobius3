@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import ssl
+import sys
 import unittest
 import uuid
 
@@ -804,7 +805,7 @@ class TestEndToEnd(unittest.TestCase):
         self.addCleanup(loop.run_until_complete, coroutine(*args))
 
     @async_test
-    async def test_process(self):
+    async def test_console_script(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
 
@@ -820,6 +821,39 @@ class TestEndToEnd(unittest.TestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             'mobius3', '/s3-home-folder', f'https://minio:9000/my-bucket', 'us-east-1',
+            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            env=os.environ, stdout=asyncio.subprocess.PIPE,
+        )
+        self.add_async_cleanup(terminate, mobius3_process)
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+        await await_upload()
+
+    @async_test
+    async def test_direct_script(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        async def terminate(process):
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+
+        mobius3_process = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'mobius3',
+            '/s3-home-folder', f'https://minio:9000/my-bucket', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
