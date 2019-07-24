@@ -8,6 +8,8 @@ checks:
     enabled: false
   file-lines:
     enabled: false
+  method-lines:
+    enabled: false
 plugins:
   duplication:
     enabled: true
