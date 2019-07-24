@@ -335,13 +335,9 @@ def Syncer(
 
     async def process_jobs():
         while True:
+            job = await job_queue.get()
             try:
-                job = await job_queue.get()
-                try:
-                    await job()
-                finally:
-                    job_queue.task_done()
-
+                await job()
             except Exception as exception:
                 if isinstance(exception, asyncio.CancelledError):
                     raise
@@ -350,6 +346,8 @@ def Syncer(
                         not isinstance(exception.__cause__, FileContentChanged)
                 ):
                     logger.exception('Exception during %s', job)
+            finally:
+                job_queue.task_done()
 
     async def upload(path, content_version_current, content_version_original):
         async def flush_events():
