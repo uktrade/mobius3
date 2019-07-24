@@ -303,7 +303,7 @@ def Syncer(
     def handle__dir__IN_MOVED_TO(_, path):
         ensure_watcher(path)
 
-    def handle__fike__IN_MOVED_TO(_, path):
+    def handle__file__IN_MOVED_TO(_, path):
         schedule_upload(path)
 
     def get_content_version(path):
