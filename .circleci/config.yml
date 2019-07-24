@@ -18,6 +18,7 @@ jobs:
             ./cc-test-reporter before-build
             touch coverage.xml
             docker-compose run --rm --volume=${PWD}/coverage.xml:/coverage.xml test sh test_with_coverage.sh
+            SUCCESS=$?
             # Suspect that combining coverage reports converts to absolute paths, which are not found in host
             sed -i 's/filename="\//filename="/g' coverage.xml
-            ./cc-test-reporter after-build --exit-code $?
+            ./cc-test-reporter after-build --exit-code ${SUCCESS}
