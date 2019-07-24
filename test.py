@@ -673,6 +673,34 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(await object_code(request, f'{dirname}/{filename}'), b'404')
 
+    @async_test
+    async def test_file_named_as_flush_uploaded_with_others(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        dirname = str(uuid.uuid4())
+        filename_1 = '.__mobius3__some_file'
+        filename_2 = str(uuid.uuid4())
+
+        os.mkdir(f'/s3-home-folder/{dirname}')
+
+        with open(f'/s3-home-folder/{dirname}/{filename_1}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        with open(f'/s3-home-folder/{dirname}/{filename_2}', 'wb') as file:
+            file.write(b'more-bytes')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+        self.assertEqual(await object_body(request, f'{dirname}/{filename_1}'), b'some-bytes')
+        self.assertEqual(await object_body(request, f'{dirname}/{filename_2}'), b'more-bytes')
+
 
 def create_directory(path):
     async def delete_dir():
