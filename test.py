@@ -789,6 +789,7 @@ class TestIntegration(unittest.TestCase):
             file.write(b'more-bytes')
 
         await await_upload()
+        await await_upload()
 
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
@@ -828,6 +829,7 @@ class TestEndToEnd(unittest.TestCase):
         with open(f'/s3-home-folder/{filename}', 'wb') as file:
             file.write(b'some-bytes')
 
+        await await_upload()
         await await_upload()
 
         request, close = get_docker_link_and_minio_compatible_http_pool()
