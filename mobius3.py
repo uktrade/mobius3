@@ -121,6 +121,9 @@ def Syncer(
     # path of any notified-on files
     wds_to_path = {}
 
+    # The asyncio task pool that performs the uploads
+    tasks = []
+
     # Uploads are initiated in the order received
     job_queue = asyncio.Queue()
 
@@ -132,9 +135,6 @@ def Syncer(
     # a change to the file contents, we know another upload will be scheduled,
     # so we abort the current upload
     content_versions = WeakValueDictionary()
-
-    # The asyncio task pool that performs the uploads
-    tasks = []
 
     # Before completing an upload, we force a flush of the event queue for
     # the uploads directory to ensure that we have processed any change events
