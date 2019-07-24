@@ -1,4 +1,5 @@
 import array
+import argparse
 import asyncio
 import ctypes
 import enum
@@ -6,6 +7,7 @@ import fcntl
 import termios
 import logging
 import os
+import ssl
 import uuid
 from pathlib import (
     PurePosixPath,
@@ -15,6 +17,9 @@ from weakref import (
     WeakValueDictionary,
 )
 
+from aiodnsresolver import (
+    Resolver,
+)
 from fifolock import (
     FifoLock,
 )
@@ -429,3 +434,65 @@ def Syncer(
     parent_locals = locals()
 
     return start, stop
+
+
+async def async_main(syncer_args):
+
+    start, _ = Syncer(**syncer_args)
+    await start()
+    await asyncio.Future()
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='mobius3', formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument(
+        'local_root',
+        metavar='local-root',
+        help='The absolute path of the directory to monitor\ne.g. /path/to/dir')
+    parser.add_argument(
+        'remote_root',
+        metavar='remote-root',
+        help='The URL to the remote bucket directory\n'
+             'e.g. https://s3-eu-west-2.amazonaws.com/my-bucket-name/dir')
+    parser.add_argument(
+        'remote_region',
+        metavar='remote-region',
+        help='The region of the bucket\ne.g. eu-west-2')
+
+    parser.add_argument(
+        '--disable-ssl-verification',
+        metavar='',
+        nargs='?', const=True, default=False)
+    parser.add_argument(
+        '--disable-0x20-dns-encoding',
+        metavar='',
+        nargs='?', const=True, default=False)
+
+    parsed_args = parser.parse_args()
+
+    async def transform_fqdn_no_0x20_encoding(fqdn):
+        return fqdn
+
+    def get_ssl_context_without_verifcation():
+        ssl_context = ssl.SSLContext()
+        ssl_context.verify_mode = ssl.CERT_NONE
+        return ssl_context
+
+    pool_args = {
+        **({
+            'get_dns_resolver': lambda: Resolver(transform_fqdn=transform_fqdn_no_0x20_encoding),
+        } if parsed_args.disable_0x20_dns_encoding else {}),
+        **({
+            'get_ssl_context': get_ssl_context_without_verifcation,
+        } if parsed_args.disable_ssl_verification else {}),
+    }
+
+    syncer_args = {
+        'local_root': parsed_args.local_root,
+        'remote_root': parsed_args.remote_root,
+        'remote_region': parsed_args.remote_region,
+        'get_pool': lambda: Pool(**pool_args)
+    }
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(async_main(syncer_args))

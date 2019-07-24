@@ -796,6 +796,48 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_body(request, filename_2), b'more-bytes')
 
 
+class TestEndToEnd(unittest.TestCase):
+
+    def add_async_cleanup(self, coroutine, *args):
+        loop = asyncio.get_event_loop()
+        self.addCleanup(loop.run_until_complete, coroutine(*args))
+
+    @async_test
+    async def test_process(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        async def terminate(process):
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+
+        install_mobius3 = await asyncio.create_subprocess_exec('python3', 'setup.py', 'install')
+        self.add_async_cleanup(terminate, install_mobius3)
+        await install_mobius3.wait()
+
+        mobius3_process = await asyncio.create_subprocess_exec(
+            'mobius3', '/s3-home-folder', f'https://minio:9000/my-bucket', 'us-east-1',
+            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            env=os.environ, stdout=asyncio.subprocess.PIPE,
+        )
+        self.add_async_cleanup(terminate, mobius3_process)
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+        await await_upload()
+
+
 def create_directory(path):
     async def delete_dir():
         shutil.rmtree(path)

@@ -29,4 +29,9 @@ setuptools.setup(
         'lowhaio-aws-sigv4-unsigned-payload>=0.0.4',
     ],
     test_suite='test',
+    entry_points={
+        'console_scripts': [
+            'mobius3=mobius3:main'
+        ],
+    },
 )
