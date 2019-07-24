@@ -6,7 +6,12 @@ ENV \
 	LANGUAGE=en_US.UTF-8
 
 RUN \
+	apk add --virtual .build-deps \
+		curl && \
 	apk add --no-cache \
-		python3
+		python3 && \
+	pip3 install \
+		coverage==4.5.3 && \
+	apk del .build-deps
 
-COPY LICENSE README.md mobius3.py setup.py test.py /
+COPY LICENSE README.md mobius3.py setup.py test.py test_with_coverage.sh .coveragerc /

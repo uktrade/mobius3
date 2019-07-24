@@ -1,0 +1,5 @@
+[run]
+parallel = True
+branch = True
+omit =
+	.eggs/*
