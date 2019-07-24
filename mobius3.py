@@ -194,6 +194,14 @@ def Syncer(
         loop.add_reader(fd, read_events)
         ensure_watcher(local_root)
 
+    async def stop():
+        loop.remove_reader(fd)
+        os.close(fd)
+        await close_pool()
+        for task in tasks:
+            task.cancel()
+        await asyncio.sleep(0)
+
     def ensure_watcher(path):
         try:
             wd = call_libc(libc.inotify_add_watch, fd, path.encode('utf-8'), WATCHED_EVENTS)
@@ -210,14 +218,6 @@ def Syncer(
 
             for directory in dirs:
                 ensure_watcher(os.path.join(root, directory))
-
-    async def stop():
-        loop.remove_reader(fd)
-        os.close(fd)
-        await close_pool()
-        for task in tasks:
-            task.cancel()
-        await asyncio.sleep(0)
 
     def read_events():
         FIONREAD_output = array.array('i', [0])
