@@ -231,7 +231,10 @@ def Syncer(
         try:
             cache_directory = layout_cache_directory(path)
         except KeyError:
-            # We may be moving from something not yet watched
+            # We may be moving from or deleting something not yet watched,
+            # in which case we leave S3 as it is. There may be file(s) in
+            # the queue to upload, but they will correctly fail if it can't
+            # find the file(s)
             pass
         else:
             recursive_delete(path, cache_directory)
