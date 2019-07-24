@@ -1,0 +1,22 @@
+version: "2"
+checks:
+  argument-count:
+    enabled: false
+  file-lines:
+    enabled: false
+  method-complexity:
+    enabled: false
+  file-lines:
+    enabled: false
+plugins:
+  duplication:
+    enabled: true
+    config:
+      languages:
+        python:
+          python_version: 3
+          mass_threshold: 40
+  sonar-python:
+    enabled: true
+    config:
+      minimum_severity: critical
