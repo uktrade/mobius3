@@ -437,7 +437,6 @@ def Syncer(
 
 
 async def async_main(syncer_args):
-
     start, _ = Syncer(**syncer_args)
     await start()
     await asyncio.Future()
