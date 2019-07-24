@@ -688,6 +688,8 @@ class TestIntegration(unittest.TestCase):
 
         os.mkdir(f'/s3-home-folder/{dirname}')
 
+        await await_upload()
+
         with open(f'/s3-home-folder/{dirname}/{filename_1}', 'wb') as file:
             file.write(b'some-bytes')
 
