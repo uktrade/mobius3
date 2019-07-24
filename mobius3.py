@@ -226,16 +226,11 @@ def Syncer(
         raw_bytes = os.read(fd, bytes_to_read)
 
         offset = 0
-        while True:
-            if not raw_bytes:
-                break
-
+        while offset < len(raw_bytes):
             wd, mask, _, length = EVENT_HEADER.unpack_from(raw_bytes, offset)
             offset += EVENT_HEADER.size
             path = raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8')
             offset += length
-            raw_bytes = raw_bytes[offset:]
-            offset = 0
 
             full_path = wds_to_path[wd] + '/' + path
 
