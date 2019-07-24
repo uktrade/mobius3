@@ -219,6 +219,23 @@ def Syncer(
             for directory in dirs:
                 watch_and_upload_directory(os.path.join(root, directory))
 
+    def remote_delete_directory(path):
+        # Directory nesting not likely to be large
+        def recursive_delete(prefix, directory):
+            for child_name, child in list(directory['children'].items()):
+                if child['type'] == 'file':
+                    schedule_delete(prefix + '/' + child_name)
+                else:
+                    recursive_delete(prefix + '/' + child_name, child)
+
+        try:
+            cache_directory = layout_cache_directory(path)
+        except KeyError:
+            # We may be moving from something not yet watched
+            pass
+        else:
+            recursive_delete(path, cache_directory)
+
     def read_events():
         FIONREAD_output = array.array('i', [0])
         fcntl.ioctl(fd, termios.FIONREAD, FIONREAD_output)
@@ -276,21 +293,7 @@ def Syncer(
         bump_content_version(path)
 
     def handle__dir__IN_MOVED_FROM(_, path):
-        # Directory nesting not likely to be large
-        def recursive_delete(prefix, directory):
-            for child_name, child in list(directory['children'].items()):
-                if child['type'] == 'file':
-                    schedule_delete(prefix + '/' + child_name)
-                else:
-                    recursive_delete(prefix + '/' + child_name, child)
-
-        try:
-            cache_directory = layout_cache_directory(path)
-        except KeyError:
-            # We may be moving from something not yet watched
-            pass
-        else:
-            recursive_delete(path, cache_directory)
+        remote_delete_directory(path)
 
     def handle__file__IN_MOVED_FROM(_, path):
         schedule_delete(path)
