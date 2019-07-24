@@ -214,7 +214,7 @@ def Syncer(
         wds_to_path[wd] = path
 
         # By the time we've added a watcher, files or subdirectories may have
-        # been created
+        # already been created
         for root, dirs, files in os.walk(path):
             for file in files:
                 schedule_upload(os.path.join(root, file))
