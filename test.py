@@ -471,6 +471,58 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_code(request, f'{filename_1}'), b'404')
         self.assertEqual(await object_body(request, f'{filename_2}'), b'some-bytes')
 
+    @async_test
+    async def test_file_delete_immediate(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        dirname = str(uuid.uuid4())
+        os.mkdir(f'/s3-home-folder/{dirname}')
+        filename = str(uuid.uuid4())
+
+        with open(f'/s3-home-folder/{dirname}/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        os.remove(f'/s3-home-folder/{dirname}/{filename}')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_code(request, f'{dirname}/{filename}'), b'404')
+
+    @async_test
+    async def test_file_delete_after_delay(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        dirname = str(uuid.uuid4())
+        os.mkdir(f'/s3-home-folder/{dirname}')
+        filename = str(uuid.uuid4())
+
+        with open(f'/s3-home-folder/{dirname}/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+
+        os.remove(f'/s3-home-folder/{dirname}/{filename}')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_code(request, f'{dirname}/{filename}'), b'404')
+
 
 def create_directory(path):
     async def delete_dir():
