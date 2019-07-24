@@ -142,6 +142,7 @@ def Syncer(
 
     # Before completing an upload, we force a flush of the event queue for
     # the uploads directory to ensure that we have processed any change events
+    # that would upate the corresponding item in content_versions
     flushes = WeakValueDictionary()
 
     # A cache of the file tree is maintained. Used for directory renames: we
