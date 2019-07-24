@@ -191,7 +191,7 @@ def Syncer(
         ]
 
         fd = call_libc(libc.inotify_init)
-        loop.add_reader(fd, handle)
+        loop.add_reader(fd, read_events)
         ensure_watcher(local_root)
 
     def ensure_watcher(path):
@@ -219,7 +219,7 @@ def Syncer(
             task.cancel()
         await asyncio.sleep(0)
 
-    def handle():
+    def read_events():
         FIONREAD_output = array.array('i', [0])
         fcntl.ioctl(fd, termios.FIONREAD, FIONREAD_output)
         bytes_to_read = FIONREAD_output[0]
