@@ -210,6 +210,8 @@ def Syncer(
         except (NotADirectoryError, FileNotFoundError):
             return
 
+        # After a directory rename, we will be changing the path of an
+        # existing entry, but that's fine
         wds_to_path[wd] = path
 
         # By the time we've added a watcher, files or subdirectories may have
@@ -291,7 +293,8 @@ def Syncer(
         bump_content_version(path)
         schedule_delete(path)
 
-    def handle__dir__IN_IGNORED(wd, _):
+    def handle__file__IN_IGNORED(wd, _):
+        # For some reason IN_ISDIR is not set with IN_IGNORED
         del wds_to_path[wd]
 
     def handle__file__IN_MODIFY(_, path):
