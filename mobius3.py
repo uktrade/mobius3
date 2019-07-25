@@ -7,6 +7,7 @@ import fcntl
 import termios
 import logging
 import os
+import signal
 import ssl
 import uuid
 from pathlib import (
@@ -437,9 +438,9 @@ def Syncer(
 
 
 async def async_main(syncer_args):
-    start, _ = Syncer(**syncer_args)
+    start, stop = Syncer(**syncer_args)
     await start()
-    await asyncio.Future()
+    return stop
 
 
 def main():
@@ -494,7 +495,14 @@ def main():
     }
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(async_main(syncer_args))
+    cleanup = loop.run_until_complete(async_main(syncer_args))
+
+    async def cleanup_then_stop():
+        await cleanup()
+        loop.stop()
+
+    loop.add_signal_handler(signal.SIGTERM, loop.create_task, cleanup_then_stop())
+    loop.run_forever()
 
 
 if __name__ == '__main__':
