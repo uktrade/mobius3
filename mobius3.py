@@ -212,9 +212,7 @@ def Syncer(
         watch_and_upload_directory(local_root)
 
     async def stop():
-        # We might get overflows during the stop, which replace job_queue
-        # and potentially add jobs to it. We make every effort to upload
-        # everything
+        # Make every effort to read all incoming events and finish the queue
         read_events()
         while job_queue._unfinished_tasks:
             await job_queue.join()
