@@ -17,6 +17,9 @@ import struct
 from weakref import (
     WeakValueDictionary,
 )
+from xml.etree import (
+    ElementTree as ET,
+)
 
 from aiodnsresolver import (
     Resolver,
@@ -187,6 +190,7 @@ def Syncer(
             asyncio.create_task(process_jobs())
             for i in range(0, concurrent_uploads)
         ]
+        await download()
         start_inotify()
 
     def start_inotify():
@@ -438,6 +442,74 @@ def Syncer(
 
         if code not in [b'200', b'204']:
             raise Exception(code, body_bytes)
+
+    async def download():
+        try:
+            async for path in list_keys_relative_to_prefix():
+                code, _, body = await signed_request(b'GET', bucket + prefix + path)
+                if code != b'200':
+                    continue
+
+                try:
+                    os.makedirs(directory / PurePosixPath(path).parent)
+                except FileExistsError:
+                    pass
+                with open(directory / path, 'wb') as file:
+                    async for chunk in body:
+                        file.write(chunk)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('Exception downloading original files')
+
+    async def list_keys_relative_to_prefix():
+        async def _list(extra_query_items=()):
+            query = (
+                ('max-keys', '1000'),
+                ('list-type', '2'),
+                ('prefix', prefix),
+            ) + extra_query_items
+            code, _, body = await signed_request(b'GET', bucket, params=query)
+            body_bytes = await buffered(body)
+            if code != b'200':
+                raise Exception(code, body_bytes)
+
+            namespace = '{http://s3.amazonaws.com/doc/2006-03-01/}'
+            root = ET.fromstring(body_bytes)
+            next_token = ''
+            keys_relative = []
+            for element in root:
+                if element.tag == f'{namespace}Contents':
+                    key = first_child_text(element, f'{namespace}Key')
+                    key_relative = key[len(prefix):]
+                    keys_relative.append(key_relative)
+
+                if element.tag == f'{namespace}NextContinuationToken':
+                    next_token = element.text
+
+            return (next_token, keys_relative)
+
+        async def list_first_page():
+            return await _list()
+
+        async def list_later_page(token):
+            return await _list((('continuation-token', token),))
+
+        def first_child_text(element, tag):
+            for child in element:
+                if child.tag == tag:
+                    return child.text
+            return None
+
+        token, keys_page = await list_first_page()
+        for key in keys_page:
+            yield key
+
+        while token:
+            token, keys_page = await list_later_page(token)
+            for key in keys_page:
+                yield key
 
     parent_locals = locals()
 

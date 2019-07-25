@@ -4,8 +4,6 @@ RUN \
 	apk add --no-cache \
 		openssl
 
-RUN \
-	mkdir -p /test-data/my-bucket
 COPY minio-entrypoint.sh /
 
 ENTRYPOINT ["/minio-entrypoint.sh"]
