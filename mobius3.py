@@ -381,6 +381,7 @@ def Syncer(
                     raise
                 if (
                         not isinstance(exception, FileNotFoundError) and
+                        not isinstance(exception, FileContentChanged) and
                         not isinstance(exception.__cause__, FileContentChanged)
                 ):
                     logger.exception('Exception during %s', job)
@@ -420,6 +421,11 @@ def Syncer(
                         raise FileContentChanged()
 
                     yield chunk
+
+        # Correctness does not depend on this: is an optimisation that allows
+        # us to abandon before we use a connection to S3
+        if content_version_current != content_version_original:
+            raise FileContentChanged()
 
         content_length = str(os.stat(path).st_size).encode()
         await locked_request(b'PUT', path, body=file_body,
