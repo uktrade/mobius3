@@ -98,7 +98,8 @@ async def get_credentials_from_environment():
 
 
 def Syncer(
-        local_root, remote_root, remote_region,
+        directory, bucket, region,
+        prefix='',
         concurrent_uploads=10,
         get_credentials=get_credentials_from_environment,
         get_pool=Pool,
@@ -109,7 +110,7 @@ def Syncer(
     loop = asyncio.get_running_loop()
     logger = logging.getLogger('mobius3')
 
-    local_root = PurePosixPath(local_root)
+    directory = PurePosixPath(directory)
 
     # The file descriptor returned from inotify_init
     fd = None
@@ -153,7 +154,7 @@ def Syncer(
 
     request, close_pool = get_pool()
     signed_request = signed(
-        request, credentials=get_credentials, service='s3', region=remote_region
+        request, credentials=get_credentials, service='s3', region=region,
     )
 
     def add_file_to_tree_cache(path):
@@ -199,7 +200,7 @@ def Syncer(
         }
         fd = call_libc(libc.inotify_init)
         loop.add_reader(fd, read_events)
-        watch_and_upload_directory(local_root)
+        watch_and_upload_directory(directory)
 
     async def stop():
         # Make every effort to read all incoming events and finish the queue
@@ -428,7 +429,7 @@ def Syncer(
         await locked_request(b'DELETE', path)
 
     async def locked_request(method, path, headers=(), body=empty_async_iterator):
-        remote_url = remote_root + '/' + str(path.relative_to(local_root))
+        remote_url = bucket + prefix + str(path.relative_to(directory))
 
         async with get_lock(path)(Mutex):
             code, headers, body = await signed_request(
@@ -452,19 +453,26 @@ async def async_main(syncer_args):
 def main():
     parser = argparse.ArgumentParser(prog='mobius3', formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument(
-        'local_root',
-        metavar='local-root',
-        help='The absolute path of the directory to monitor\ne.g. /path/to/dir')
+        'directory',
+        metavar='directory',
+        help='Path of the directory to sync, without a trailing slash\ne.g. /path/to/dir')
     parser.add_argument(
-        'remote_root',
-        metavar='remote-root',
-        help='The URL to the remote bucket directory\n'
-             'e.g. https://s3-eu-west-2.amazonaws.com/my-bucket-name/dir')
+        'bucket',
+        metavar='bucket',
+        help='URL to the remote bucket, with a trailing slash\n'
+             'e.g. https://s3-eu-west-2.amazonaws.com/my-bucket-name/')
     parser.add_argument(
-        'remote_region',
-        metavar='remote-region',
+        'region',
+        metavar='region',
         help='The region of the bucket\ne.g. eu-west-2')
 
+    parser.add_argument(
+        '--prefix',
+        metavar='prefix',
+        default='',
+        nargs='?',
+        help='Prefix of keys in the bucket, often with a trailing slash\n'
+             'e.g. my-folder/')
     parser.add_argument(
         '--disable-ssl-verification',
         metavar='',
@@ -494,9 +502,10 @@ def main():
     }
 
     syncer_args = {
-        'local_root': parsed_args.local_root,
-        'remote_root': parsed_args.remote_root,
-        'remote_region': parsed_args.remote_region,
+        'directory': parsed_args.directory,
+        'bucket': parsed_args.bucket,
+        'prefix': parsed_args.prefix,
+        'region': parsed_args.region,
         'get_pool': lambda: Pool(**pool_args)
     }
 

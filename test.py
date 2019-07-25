@@ -884,7 +884,7 @@ class TestEndToEnd(unittest.TestCase):
         await install_mobius3.wait()
 
         mobius3_process = await asyncio.create_subprocess_exec(
-            'mobius3', '/s3-home-folder', f'https://minio:9000/my-bucket', 'us-east-1',
+            'mobius3', '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -911,7 +911,7 @@ class TestEndToEnd(unittest.TestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
-            '/s3-home-folder', f'https://minio:9000/my-bucket', 'us-east-1',
+            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -938,7 +938,7 @@ class TestEndToEnd(unittest.TestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
-            '/s3-home-folder', f'https://minio:9000/my-bucket', 'us-east-1',
+            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -957,6 +957,65 @@ class TestEndToEnd(unittest.TestCase):
         self.add_async_cleanup(close)
 
         self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+        await await_upload()
+
+    @async_test
+    async def test_direct_script_without_prefix_after_stop(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        mobius3_process = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'mobius3',
+            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            env=os.environ, stdout=asyncio.subprocess.PIPE,
+        )
+        self.add_async_cleanup(terminate, mobius3_process)
+
+        await await_upload()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        mobius3_process.terminate()
+        await mobius3_process.wait()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+        await await_upload()
+
+    @async_test
+    async def test_direct_script_with_prefix_after_stop(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        mobius3_process = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'mobius3',
+            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            '--prefix', 'my-folder/',
+            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            env=os.environ, stdout=asyncio.subprocess.PIPE,
+        )
+        self.add_async_cleanup(terminate, mobius3_process)
+
+        await await_upload()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        mobius3_process.terminate()
+        await mobius3_process.wait()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, f'my-folder/{filename}'), b'some-bytes')
 
         await await_upload()
 
@@ -994,7 +1053,7 @@ async def terminate(process):
 
 def syncer_for(path):
     return Syncer(
-        path, 'https://minio:9000/my-bucket', 'us-east-1',
+        path, 'https://minio:9000/my-bucket/', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
     )
 
