@@ -110,7 +110,7 @@ async def get_credentials_from_environment():
 
 def Syncer(
         local_root, remote_root, remote_region,
-        concurrent_uploads=5,
+        concurrent_uploads=10,
         get_credentials=get_credentials_from_environment,
         get_pool=Pool,
         flush_file_root='.__mobius3__',
@@ -201,23 +201,28 @@ def Syncer(
     def start_inotify():
         nonlocal wds_to_path
         nonlocal tree_cache_root
-        nonlocal job_queue
         nonlocal fd
         wds_to_path = {}
         tree_cache_root = {
             'type': 'directory',
             'children': {},
         }
-        job_queue = asyncio.Queue()
         fd = call_libc(libc.inotify_init)
         loop.add_reader(fd, read_events)
         watch_and_upload_directory(local_root)
 
     async def stop():
+        # We might get overflows during the stop, which replace job_queue
+        # and potentially add jobs to it. We make every effort to upload
+        # everything
+        read_events()
+        while job_queue._unfinished_tasks:
+            await job_queue.join()
+            read_events()
         stop_inotify()
-        await close_pool()
         for task in tasks:
             task.cancel()
+        await close_pool()
         await asyncio.sleep(0)
 
     def stop_inotify():
@@ -267,6 +272,9 @@ def Syncer(
         FIONREAD_output = array.array('i', [0])
         fcntl.ioctl(fd, termios.FIONREAD, FIONREAD_output)
         bytes_to_read = FIONREAD_output[0]
+
+        if not bytes_to_read:
+            return
         raw_bytes = os.read(fd, bytes_to_read)
 
         offset = 0
@@ -365,9 +373,7 @@ def Syncer(
 
     async def process_jobs():
         while True:
-            # We might restart and create a new queue-mid job
-            original_job_queue = job_queue
-            job = await original_job_queue.get()
+            job = await job_queue.get()
             try:
                 await job()
             except Exception as exception:
@@ -375,11 +381,12 @@ def Syncer(
                     raise
                 if (
                         not isinstance(exception, FileNotFoundError) and
+                        not isinstance(exception, FileContentChanged) and
                         not isinstance(exception.__cause__, FileContentChanged)
                 ):
                     logger.exception('Exception during %s', job)
             finally:
-                original_job_queue.task_done()
+                job_queue.task_done()
 
     async def upload(path, content_version_current, content_version_original):
         async def flush_events():
@@ -415,6 +422,11 @@ def Syncer(
 
                     yield chunk
 
+        # Correctness does not depend on this: is an optimisation that allows
+        # us to abandon before we use a connection to S3
+        if content_version_current != content_version_original:
+            raise FileContentChanged()
+
         content_length = str(os.stat(path).st_size).encode()
         await locked_request(b'PUT', path, body=file_body,
                              headers=((b'content-length', content_length),))
@@ -426,7 +438,8 @@ def Syncer(
         remote_url = remote_root + '/' + str(path.relative_to(local_root))
 
         async with get_lock(path)(Mutex):
-            code, _, body = await signed_request(method, remote_url, headers=headers, body=body)
+            code, headers, body = await signed_request(
+                method, remote_url, headers=headers, body=body)
             body_bytes = await buffered(body)
 
         if code not in [b'200', b'204']:

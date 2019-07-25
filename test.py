@@ -196,6 +196,25 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(body_bytes, b'some-bytes')
 
     @async_test
+    async def test_file_uploaded_after_stop(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'\x00' * 10000000)
+
+        await stop()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'\x00' * 10000000)
+
+    @async_test
     async def test_file_closed_half_way_through_with_no_modification(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
@@ -828,7 +847,6 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(delete_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
         await start()
 
         filename_1 = str(uuid.uuid4())
@@ -842,8 +860,7 @@ class TestIntegration(unittest.TestCase):
         with open(f'/s3-home-folder/{filename_2}', 'wb') as file:
             file.write(b'more-bytes')
 
-        await await_upload()
-        await await_upload()
+        await stop()
 
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
@@ -888,7 +905,7 @@ class TestEndToEnd(unittest.TestCase):
         await await_upload()
 
     @async_test
-    async def test_direct_script(self):
+    async def test_direct_script_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
 
@@ -906,6 +923,35 @@ class TestEndToEnd(unittest.TestCase):
 
         await await_upload()
         await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+        await await_upload()
+
+    @async_test
+    async def test_direct_script_after_stop(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        mobius3_process = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'mobius3',
+            '/s3-home-folder', f'https://minio:9000/my-bucket', 'us-east-1',
+            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            env=os.environ, stdout=asyncio.subprocess.PIPE,
+        )
+        self.add_async_cleanup(terminate, mobius3_process)
+
+        await await_upload()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        mobius3_process.terminate()
+        await mobius3_process.wait()
 
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
