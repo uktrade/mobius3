@@ -4,7 +4,7 @@ Continuously and asynchronously sync a local folder to an S3 bucket. This is a P
 
 - FUSE cannot be used, such as in AWS Fargate;
 - high performance local access is more important than synchronous saving to S3;
-- there can be frequent concurrent modifications to the same file monitored by a single client;
+- there can be frequent modifications to the same file monitored by a single client;
 - there are infrequent concurrent modifications to the same file from different clients;
 - local files can be changed by any program;
 - there are at most ~10k files to sync;
