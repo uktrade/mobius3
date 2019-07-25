@@ -413,12 +413,14 @@ def Syncer(
 
                     yield chunk
 
-        # Correctness does not depend on this: is an optimisation that allows
-        # us to abandon before we use a connection to S3
+        content_length = str(os.stat(path).st_size).encode()
+
+        # Ensure we only progress if the content length hasn't changed since
+        # we have queued the upload
+        await flush_events()
         if content_version_current != content_version_original:
             raise FileContentChanged()
 
-        content_length = str(os.stat(path).st_size).encode()
         await locked_request(b'PUT', path, body=file_body,
                              headers=((b'content-length', content_length),))
 
