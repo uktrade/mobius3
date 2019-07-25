@@ -201,14 +201,12 @@ def Syncer(
     def start_inotify():
         nonlocal wds_to_path
         nonlocal tree_cache_root
-        nonlocal job_queue
         nonlocal fd
         wds_to_path = {}
         tree_cache_root = {
             'type': 'directory',
             'children': {},
         }
-        job_queue = asyncio.Queue()
         fd = call_libc(libc.inotify_init)
         loop.add_reader(fd, read_events)
         watch_and_upload_directory(local_root)
@@ -375,9 +373,7 @@ def Syncer(
 
     async def process_jobs():
         while True:
-            # We might restart and create a new queue-mid job
-            original_job_queue = job_queue
-            job = await original_job_queue.get()
+            job = await job_queue.get()
             try:
                 await job()
             except Exception as exception:
@@ -389,7 +385,7 @@ def Syncer(
                 ):
                     logger.exception('Exception during %s', job)
             finally:
-                original_job_queue.task_done()
+                job_queue.task_done()
 
     async def upload(path, content_version_current, content_version_original):
         async def flush_events():

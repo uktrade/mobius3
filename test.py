@@ -847,7 +847,6 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(delete_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
         await start()
 
         filename_1 = str(uuid.uuid4())
@@ -861,8 +860,7 @@ class TestIntegration(unittest.TestCase):
         with open(f'/s3-home-folder/{filename_2}', 'wb') as file:
             file.write(b'more-bytes')
 
-        await await_upload()
-        await await_upload()
+        await stop()
 
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
