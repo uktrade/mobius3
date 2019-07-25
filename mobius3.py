@@ -80,13 +80,13 @@ class InotifyFlags(enum.IntEnum):
 
 
 WATCHED_EVENTS = \
-    InotifyFlags.IN_ONLYDIR | \
     InotifyFlags.IN_MODIFY | \
     InotifyFlags.IN_CLOSE_WRITE | \
+    InotifyFlags.IN_MOVED_FROM | \
+    InotifyFlags.IN_MOVED_TO | \
     InotifyFlags.IN_CREATE | \
     InotifyFlags.IN_DELETE | \
-    InotifyFlags.IN_MOVED_TO | \
-    InotifyFlags.IN_MOVED_FROM
+    InotifyFlags.IN_ONLYDIR
 
 
 EVENT_HEADER = struct.Struct('iIII')
