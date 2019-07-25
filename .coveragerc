@@ -3,3 +3,4 @@ parallel = True
 branch = True
 omit =
 	.eggs/*
+	/usr/bin/mobius3
