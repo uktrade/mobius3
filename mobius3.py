@@ -214,10 +214,17 @@ def Syncer(
         watch_and_upload_directory(local_root)
 
     async def stop():
+        # We might get overflows during the stop, which replace job_queue
+        # and potentially add jobs to it. We make every effort to upload
+        # everything
+        read_events()
+        while job_queue._unfinished_tasks:
+            await job_queue.join()
+            read_events()
         stop_inotify()
-        await close_pool()
         for task in tasks:
             task.cancel()
+        await close_pool()
         await asyncio.sleep(0)
 
     def stop_inotify():
@@ -267,6 +274,9 @@ def Syncer(
         FIONREAD_output = array.array('i', [0])
         fcntl.ioctl(fd, termios.FIONREAD, FIONREAD_output)
         bytes_to_read = FIONREAD_output[0]
+
+        if not bytes_to_read:
+            return
         raw_bytes = os.read(fd, bytes_to_read)
 
         offset = 0
@@ -426,7 +436,8 @@ def Syncer(
         remote_url = remote_root + '/' + str(path.relative_to(local_root))
 
         async with get_lock(path)(Mutex):
-            code, _, body = await signed_request(method, remote_url, headers=headers, body=body)
+            code, headers, body = await signed_request(
+                method, remote_url, headers=headers, body=body)
             body_bytes = await buffered(body)
 
         if code not in [b'200', b'204']:

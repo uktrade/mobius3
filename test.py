@@ -196,6 +196,25 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(body_bytes, b'some-bytes')
 
     @async_test
+    async def test_file_uploaded_after_stop(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'\x00' * 10000000)
+
+        await stop()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'\x00' * 10000000)
+
+    @async_test
     async def test_file_closed_half_way_through_with_no_modification(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
