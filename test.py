@@ -757,6 +757,39 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_code(request, f'{dirname}/{filename}'), b'404')
 
     @async_test
+    async def test_many_files_delete_after_delay(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        dirname = str(uuid.uuid4())
+        os.mkdir(f'/s3-home-folder/{dirname}')
+
+        filenames = [
+            str(uuid.uuid4()) for _ in range(0, 100)
+        ]
+
+        for filename in filenames:
+            with open(f'/s3-home-folder/{dirname}/{filename}', 'wb') as file:
+                file.write(b'some-bytes')
+
+        await await_upload()
+
+        for filename in filenames:
+            os.remove(f'/s3-home-folder/{dirname}/{filename}')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        for filename in filenames:
+            self.assertEqual(await object_code(request, f'{dirname}/{filename}'), b'404')
+
+    @async_test
     async def test_file_named_as_flush_uploaded_with_others(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
