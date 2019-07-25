@@ -26,7 +26,7 @@ pip install mobius3
 mobius3 can be used a standalone command-line application
 
 ```bash
-mobius3 /local/folder https://remote-bucket.s3-eu-west-2.amazonaws.com/path/in/bucket eu-west-2
+mobius3 /local/folder https://remote-bucket.s3-eu-west-2.amazonaws.com/ eu-west-2 --prefix folder/
 ```
 
 or from asyncio Python
@@ -34,7 +34,7 @@ or from asyncio Python
 ```python
 from mobius3 import Syncer
 
-start, stop = Syncer('/local/folder', 'https://remote-bucket.s3-eu-west-2.amazonaws.com/path/in/bucket', 'eu-west-2')
+start, stop = Syncer('/local/folder', 'https://remote-bucket.s3-eu-west-2.amazonaws.com/', 'eu-west-2', prefix='folder/')
 
 # Will copy the contents of the bucket to the local folder,
 # raise exceptions on error, and then continue to sync in the background
