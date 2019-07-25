@@ -28,6 +28,7 @@ from lowhaio import (
     Pool,
     buffered,
     empty_async_iterator,
+    timeout,
 )
 from lowhaio_aws_sigv4_unsigned_payload import (
     signed,
@@ -102,6 +103,7 @@ def Syncer(
         get_credentials=get_credentials_from_environment,
         get_pool=Pool,
         flush_file_root='.__mobius3__',
+        flush_file_timeout=5,
 ):
 
     loop = asyncio.get_running_loop()
@@ -382,7 +384,10 @@ def Syncer(
             with open(flush_path, 'w'):
                 pass
             os.remove(flush_path)
-            await event.wait()
+            # In rare cases, the event queue could be full and the event for
+            # the flush file is dropped
+            with timeout(loop, flush_file_timeout):
+                await event.wait()
 
         def with_is_last(iterable):
             try:
