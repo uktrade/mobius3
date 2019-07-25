@@ -110,7 +110,7 @@ async def get_credentials_from_environment():
 
 def Syncer(
         local_root, remote_root, remote_region,
-        concurrent_uploads=5,
+        concurrent_uploads=10,
         get_credentials=get_credentials_from_environment,
         get_pool=Pool,
         flush_file_root='.__mobius3__',
