@@ -61,8 +61,7 @@ class Mutex(asyncio.Future):
         return not holds[Mutex]
 
 
-class InotifyFlags(enum.IntEnum):
-    # Can watch for these events
+class InotifyEvents(enum.IntEnum):
     IN_MODIFY = 0x00000002
     IN_CLOSE_WRITE = 0x00000008
     IN_MOVED_FROM = 0x00000040
@@ -70,22 +69,23 @@ class InotifyFlags(enum.IntEnum):
     IN_CREATE = 0x00000100
     IN_DELETE = 0x00000200
 
-    # Events sent by the kernel without explicitly watching for them
+    # Sent by the kernel without explicitly watching for them
     IN_Q_OVERFLOW = 0x00004000
     IN_IGNORED = 0x00008000
 
-    # Flags
+
+class InotifyFlags(enum.IntEnum):
     IN_ONLYDIR = 0x01000000
     IN_ISDIR = 0x40000000
 
 
-WATCHED_EVENTS = \
-    InotifyFlags.IN_MODIFY | \
-    InotifyFlags.IN_CLOSE_WRITE | \
-    InotifyFlags.IN_MOVED_FROM | \
-    InotifyFlags.IN_MOVED_TO | \
-    InotifyFlags.IN_CREATE | \
-    InotifyFlags.IN_DELETE | \
+WATCH_MASK = \
+    InotifyEvents.IN_MODIFY | \
+    InotifyEvents.IN_CLOSE_WRITE | \
+    InotifyEvents.IN_MOVED_FROM | \
+    InotifyEvents.IN_MOVED_TO | \
+    InotifyEvents.IN_CREATE | \
+    InotifyEvents.IN_DELETE | \
     InotifyFlags.IN_ONLYDIR
 
 
@@ -217,7 +217,7 @@ def Syncer(
 
     def watch_and_upload_directory(path):
         try:
-            wd = call_libc(libc.inotify_add_watch, fd, str(path).encode('utf-8'), WATCHED_EVENTS)
+            wd = call_libc(libc.inotify_add_watch, fd, str(path).encode('utf-8'), WATCH_MASK)
         except (NotADirectoryError, FileNotFoundError):
             return
 
@@ -270,7 +270,7 @@ def Syncer(
             path = PurePosixPath(raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8'))
             offset += length
 
-            if mask & InotifyFlags.IN_Q_OVERFLOW:
+            if mask & InotifyEvents.IN_Q_OVERFLOW:
                 stop_inotify()
                 start_inotify()
                 continue
@@ -286,11 +286,11 @@ def Syncer(
                     flush.set()
                     continue
 
-            flags = [flag for flag in InotifyFlags.__members__.values() if flag & mask]
+            events = [event for event in InotifyEvents.__members__.values() if event & mask]
             item_type = 'dir' if mask & InotifyFlags.IN_ISDIR else 'file'
-            for flag in flags:
+            for event in events:
                 try:
-                    handler = parent_locals[f'handle__{item_type}__{flag.name}']
+                    handler = parent_locals[f'handle__{item_type}__{event.name}']
                 except KeyError:
                     continue
 
