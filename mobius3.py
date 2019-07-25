@@ -429,7 +429,7 @@ def Syncer(
             code, _, body = await signed_request(method, remote_url, headers=headers, body=body)
             body_bytes = await buffered(body)
 
-        if code != b'200':
+        if code not in [b'200', b'204']:
             raise Exception(code, body_bytes)
 
     parent_locals = locals()
