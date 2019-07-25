@@ -37,7 +37,7 @@ class TestIntegration(unittest.TestCase):
         self.addCleanup(loop.run_until_complete, coroutine(*args))
 
     @async_test
-    async def test_download_file_at_start(self):
+    async def test_download_file_at_start_then_upload(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
@@ -46,20 +46,27 @@ class TestIntegration(unittest.TestCase):
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
 
-        filename = str(uuid.uuid4())
-        code, _, body = await put_body(request, f'prefix/{filename}', b'some-bytes')
+        filename_1 = str(uuid.uuid4())
+        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
         self.assertEqual(code, b'200')
         await buffered(body)
 
         start, stop = syncer_for('/s3-home-folder', prefix='prefix/')
-        self.add_async_cleanup(stop)
 
         await start()
 
-        with open(f'/s3-home-folder/{filename}', 'rb') as file:
+        with open(f'/s3-home-folder/{filename_1}', 'rb') as file:
             body_bytes = file.read()
 
         self.assertEqual(body_bytes, b'some-bytes')
+
+        filename_2 = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename_2}', 'wb') as file:
+            file.write(b'more-bytes')
+
+        await stop()
+
+        self.assertEqual(await object_body(request, f'prefix/{filename_2}'), b'more-bytes')
 
     @async_test
     async def test_download_nested_files_at_start(self):
