@@ -1,4 +1,4 @@
-version: "3"
+version: "3.7"
 services:
   test:
     build:
@@ -9,6 +9,10 @@ services:
     environment:
       - AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
       - AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    volumes:
+      - type: volume
+        source: minio-buckets
+        target: /test-data
   minio:
     build:
       context: .
@@ -19,3 +23,10 @@ services:
       - MINIO_REGION=us-east-1
     ports:
       - "9000:9000"
+    volumes:
+      - type: volume
+        source: minio-buckets
+        target: /test-data
+
+volumes:
+  minio-buckets:

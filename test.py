@@ -12,6 +12,7 @@ from aiodnsresolver import (
 from lowhaio import (
     Pool,
     buffered,
+    streamed,
 )
 from lowhaio_aws_sigv4_unsigned_payload import (
     signed,
@@ -36,9 +37,68 @@ class TestIntegration(unittest.TestCase):
         self.addCleanup(loop.run_until_complete, coroutine(*args))
 
     @async_test
+    async def test_download_file_at_start(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        filename = str(uuid.uuid4())
+        code, _, body = await put_body(request, f'prefix/{filename}', b'some-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        start, stop = syncer_for('/s3-home-folder', prefix='prefix/')
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        with open(f'/s3-home-folder/{filename}', 'rb') as file:
+            body_bytes = file.read()
+
+        self.assertEqual(body_bytes, b'some-bytes')
+
+    @async_test
+    async def test_download_nested_files_at_start(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        filename_1 = str(uuid.uuid4())
+        filename_2 = str(uuid.uuid4())
+        directory = str(uuid.uuid4())
+        code, _, body = await put_body(request, f'prefix/{directory}/{filename_1}', b'some-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+        code, _, body = await put_body(request, f'prefix/{directory}/{filename_2}', b'more-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        start, stop = syncer_for('/s3-home-folder', prefix='prefix/')
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        with open(f'/s3-home-folder/{directory}/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-bytes')
+        with open(f'/s3-home-folder/{directory}/{filename_2}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'more-bytes')
+
+    @async_test
     async def test_single_small_file_uploaded(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -59,6 +119,8 @@ class TestIntegration(unittest.TestCase):
     async def test_single_small_file_uploaded_emoji(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -79,6 +141,8 @@ class TestIntegration(unittest.TestCase):
     async def test_single_empty_file_uploaded(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -99,6 +163,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_inside_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -124,6 +190,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_inside_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -147,6 +215,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_inside_nested_directory_immediate_after_previous_deleted(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -173,6 +243,8 @@ class TestIntegration(unittest.TestCase):
     async def test_nested_file_inside_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -199,6 +271,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_uploaded_after_stop(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         await start()
@@ -218,6 +292,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_closed_half_way_through_with_no_modification(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -244,6 +320,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_modified_and_closed_half_way_through(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -270,6 +348,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_changed_half_way_through_no_close_then_close(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -299,6 +379,8 @@ class TestIntegration(unittest.TestCase):
     async def test_single_small_file_deleted_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -323,6 +405,8 @@ class TestIntegration(unittest.TestCase):
     async def test_single_small_file_deleted_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -345,6 +429,8 @@ class TestIntegration(unittest.TestCase):
     async def test_single_small_file_parent_directory_deleted_then_recreated_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -374,6 +460,8 @@ class TestIntegration(unittest.TestCase):
     async def test_single_small_file_parent_directory_deleted_then_recreated_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -405,6 +493,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_in_renamed_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -435,6 +525,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_in_renamed_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -463,6 +555,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_in_renamed_nested_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -499,6 +593,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_created_in_renamed_watched_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -531,6 +627,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_created_in_renamed_watched_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -561,6 +659,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_in_renamed_nested_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -595,6 +695,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_in_renamed_twice_nested_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -636,6 +738,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_in_renamed_twice_nested_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -675,6 +779,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_rename_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -700,6 +806,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_rename_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -727,6 +835,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_delete_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -752,6 +862,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_delete_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -779,6 +891,8 @@ class TestIntegration(unittest.TestCase):
     async def test_many_files_delete_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -812,6 +926,8 @@ class TestIntegration(unittest.TestCase):
     async def test_file_named_as_flush_uploaded_with_others(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         self.add_async_cleanup(stop)
@@ -845,6 +961,8 @@ class TestIntegration(unittest.TestCase):
 
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         await start()
@@ -878,6 +996,8 @@ class TestEndToEnd(unittest.TestCase):
     async def test_console_script(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         install_mobius3 = await asyncio.create_subprocess_exec('python3', 'setup.py', 'develop')
         self.add_async_cleanup(terminate, install_mobius3)
@@ -908,6 +1028,8 @@ class TestEndToEnd(unittest.TestCase):
     async def test_direct_script_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
@@ -935,6 +1057,8 @@ class TestEndToEnd(unittest.TestCase):
     async def test_direct_script_after_stop(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
@@ -964,6 +1088,8 @@ class TestEndToEnd(unittest.TestCase):
     async def test_direct_script_without_prefix_after_stop(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
@@ -993,6 +1119,8 @@ class TestEndToEnd(unittest.TestCase):
     async def test_direct_script_with_prefix_after_stop(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
@@ -1022,9 +1150,15 @@ class TestEndToEnd(unittest.TestCase):
 
 def create_directory(path):
     async def delete_dir():
-        shutil.rmtree(path)
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            pass
 
-    os.mkdir(path)
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        pass
 
     return delete_dir
 
@@ -1051,10 +1185,11 @@ async def terminate(process):
         pass
 
 
-def syncer_for(path):
+def syncer_for(path, prefix=''):
     return Syncer(
         path, 'https://minio:9000/my-bucket/', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
+        prefix=prefix,
     )
 
 
@@ -1074,12 +1209,23 @@ async def object_code(request, key):
     return code
 
 
-async def object_triple(request, key):
-    async def get_credentials_from_environment():
-        return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
+async def get_credentials_from_environment():
+    return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
 
+
+async def object_triple(request, key):
     signed_request = signed(
         request, credentials=get_credentials_from_environment,
         service='s3', region='us-east-1',
     )
     return await signed_request(b'GET', f'https://minio:9000/my-bucket/{key}')
+
+
+async def put_body(request, key, body):
+    signed_request = signed(
+        request, credentials=get_credentials_from_environment,
+        service='s3', region='us-east-1',
+    )
+    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}',
+                                headers=((b'content-length', str(len(body)).encode()),),
+                                body=streamed(body))
