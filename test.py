@@ -809,12 +809,6 @@ class TestEndToEnd(unittest.TestCase):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
 
-        async def terminate(process):
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                pass
-
         install_mobius3 = await asyncio.create_subprocess_exec('python3', 'setup.py', 'develop')
         self.add_async_cleanup(terminate, install_mobius3)
         await install_mobius3.wait()
@@ -844,12 +838,6 @@ class TestEndToEnd(unittest.TestCase):
     async def test_direct_script(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
-
-        async def terminate(process):
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                pass
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
@@ -896,6 +884,13 @@ def get_docker_link_and_minio_compatible_http_pool():
         # We use self-signed certs locally
         get_ssl_context=lambda: ssl_context,
     )
+
+
+async def terminate(process):
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass
 
 
 def syncer_for(path):
