@@ -9,6 +9,7 @@ import logging
 import os
 import signal
 import ssl
+import sys
 import uuid
 from pathlib import (
     PurePosixPath,
@@ -190,7 +191,7 @@ def Syncer(
             asyncio.create_task(process_jobs())
             for i in range(0, concurrent_uploads)
         ]
-        await download()
+        await download(logger)
         start_inotify()
 
     def start_inotify():
@@ -204,7 +205,7 @@ def Syncer(
         }
         fd = call_libc(libc.inotify_init)
         loop.add_reader(fd, read_events)
-        watch_and_upload_directory(directory)
+        watch_and_upload_directory(logger, directory)
 
     async def stop():
         # Make every effort to read all incoming events and finish the queue
@@ -222,7 +223,7 @@ def Syncer(
         loop.remove_reader(fd)
         os.close(fd)
 
-    def watch_and_upload_directory(path):
+    def watch_and_upload_directory(clogger, path):
         try:
             wd = call_libc(libc.inotify_add_watch, fd, str(path).encode('utf-8'), WATCH_MASK)
         except (NotADirectoryError, FileNotFoundError):
@@ -236,17 +237,17 @@ def Syncer(
         # already been created
         for root, dirs, files in os.walk(path):
             for file in files:
-                schedule_upload(PurePosixPath(root) / file)
+                schedule_upload(clogger, PurePosixPath(root) / file)
 
             for directory in dirs:
-                watch_and_upload_directory(PurePosixPath(root) / directory)
+                watch_and_upload_directory(clogger, PurePosixPath(root) / directory)
 
-    def remote_delete_directory(path):
+    def remote_delete_directory(clogger, path):
         # Directory nesting not likely to be large
         def recursive_delete(prefix, directory):
             for child_name, child in list(directory['children'].items()):
                 if child['type'] == 'file':
-                    schedule_delete(prefix / child_name)
+                    schedule_delete(clogger, prefix / child_name)
                 else:
                     recursive_delete(prefix / child_name, child)
 
@@ -272,6 +273,8 @@ def Syncer(
 
         offset = 0
         while offset < len(raw_bytes):
+            clogger = logger
+
             wd, mask, _, length = EVENT_HEADER.unpack_from(raw_bytes, offset)
             offset += EVENT_HEADER.size
             path = PurePosixPath(raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8'))
@@ -302,41 +305,41 @@ def Syncer(
                     continue
 
                 try:
-                    handler(wd, full_path)
+                    handler(clogger, wd, full_path)
                 except Exception:
-                    logger.exception('Exception during handler %s', path)
+                    clogger.exception('Exception during handler %s', path)
 
-    def handle__file__IN_CLOSE_WRITE(_, path):
-        schedule_upload(path)
+    def handle__file__IN_CLOSE_WRITE(clogger, _, path):
+        schedule_upload(clogger, path)
 
-    def handle__dir__IN_CREATE(_, path):
-        watch_and_upload_directory(path)
+    def handle__dir__IN_CREATE(clogger, _, path):
+        watch_and_upload_directory(clogger, path)
 
-    def handle__file__IN_DELETE(_, path):
+    def handle__file__IN_DELETE(clogger, _, path):
         # Correctness does not depend on this bump: it's an optimisation
         # that ensures we abandon any upload of this path ahead of us
         # in the queue
         bump_content_version(path)
-        schedule_delete(path)
+        schedule_delete(clogger, path)
 
-    def handle__file__IN_IGNORED(wd, _):
+    def handle__file__IN_IGNORED(_, wd, __):
         # For some reason IN_ISDIR is not set with IN_IGNORED
         del wds_to_path[wd]
 
-    def handle__file__IN_MODIFY(_, path):
+    def handle__file__IN_MODIFY(_, __, path):
         bump_content_version(path)
 
-    def handle__dir__IN_MOVED_FROM(_, path):
-        remote_delete_directory(path)
+    def handle__dir__IN_MOVED_FROM(clogger, _, path):
+        remote_delete_directory(clogger, path)
 
-    def handle__file__IN_MOVED_FROM(_, path):
-        schedule_delete(path)
+    def handle__file__IN_MOVED_FROM(clogger, _, path):
+        schedule_delete(clogger, path)
 
-    def handle__dir__IN_MOVED_TO(_, path):
-        watch_and_upload_directory(path)
+    def handle__dir__IN_MOVED_TO(clogger, _, path):
+        watch_and_upload_directory(clogger, path)
 
-    def handle__file__IN_MOVED_TO(_, path):
-        schedule_upload(path)
+    def handle__file__IN_MOVED_TO(clogger, _, path):
+        schedule_upload(clogger, path)
 
     def get_content_version(path):
         return content_versions.setdefault(path, default=WeakReferenceableDict(version=0))
@@ -347,26 +350,26 @@ def Syncer(
     def get_lock(path):
         return path_locks.setdefault(path, default=FifoLock())
 
-    def schedule_upload(path):
+    def schedule_upload(clogger, path):
         version_current = get_content_version(path)
         version_original = version_current.copy()
 
         async def function():
-            await upload(path, version_current, version_original)
+            await upload(clogger, path, version_current, version_original)
 
         add_file_to_tree_cache(path)
-        job_queue.put_nowait(function)
+        job_queue.put_nowait((clogger, function))
 
-    def schedule_delete(path):
+    def schedule_delete(clogger, path):
         async def function():
-            await delete(path)
+            await delete(clogger, path)
 
         remove_file_from_tree_cache(path)
-        job_queue.put_nowait(function)
+        job_queue.put_nowait((clogger, function))
 
     async def process_jobs():
         while True:
-            job = await job_queue.get()
+            clogger, job = await job_queue.get()
             try:
                 await job()
             except Exception as exception:
@@ -377,11 +380,11 @@ def Syncer(
                         not isinstance(exception, FileContentChanged) and
                         not isinstance(exception.__cause__, FileContentChanged)
                 ):
-                    logger.exception('Exception during %s', job)
+                    clogger.exception('Exception during %s', job)
             finally:
                 job_queue.task_done()
 
-    async def upload(path, content_version_current, content_version_original):
+    async def upload(clogger, path, content_version_current, content_version_original):
         async def flush_events():
             flush_path = path.parent / (flush_file_root + uuid.uuid4().hex)
             event = asyncio.Event()
@@ -426,13 +429,13 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged()
 
-        await locked_request(b'PUT', path, body=file_body,
+        await locked_request(clogger, b'PUT', path, body=file_body,
                              headers=((b'content-length', content_length),))
 
-    async def delete(path):
-        await locked_request(b'DELETE', path)
+    async def delete(clogger, path):
+        await locked_request(clogger, b'DELETE', path)
 
-    async def locked_request(method, path, headers=(), body=empty_async_iterator):
+    async def locked_request(_, method, path, headers=(), body=empty_async_iterator):
         remote_url = bucket + prefix + str(path.relative_to(directory))
 
         async with get_lock(path)(Mutex):
@@ -443,7 +446,7 @@ def Syncer(
         if code not in [b'200', b'204']:
             raise Exception(code, body_bytes)
 
-    async def download():
+    async def download(clogger):
         try:
             async for path in list_keys_relative_to_prefix():
                 code, _, body = await signed_request(b'GET', bucket + prefix + path)
@@ -461,7 +464,7 @@ def Syncer(
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception('Exception downloading original files')
+            clogger.exception('Exception downloading original files')
 
     async def list_keys_relative_to_prefix():
         async def _list(extra_query_items=()):
@@ -553,8 +556,17 @@ def main():
         '--disable-0x20-dns-encoding',
         metavar='',
         nargs='?', const=True, default=False)
+    parser.add_argument(
+        '--log-level',
+        metavar='',
+        nargs='?', const=True, default='INFO')
 
     parsed_args = parser.parse_args()
+
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    logger = logging.getLogger('mobius3')
+    logger.setLevel(parsed_args.log_level)
+    logger.addHandler(stdout_handler)
 
     async def transform_fqdn_no_0x20_encoding(fqdn):
         return fqdn
