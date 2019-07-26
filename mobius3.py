@@ -197,6 +197,7 @@ def Syncer(
         return directory['children'][path.name]
 
     async def start(logger=default_logger):
+        logger.debug('Starting')
         nonlocal tasks
         tasks = [
             asyncio.create_task(process_jobs())
@@ -224,15 +225,18 @@ def Syncer(
 
     async def stop(logger=default_logger):
         # Make every effort to read all incoming events and finish the queue
-        read_events(logger)
+        stop_logger = ChildAdapter(logger, ['stop'])
+        stop_logger.debug('Stopping')
+        read_events(stop_logger)
         while job_queue._unfinished_tasks:
             await job_queue.join()
-            read_events(logger)
+            read_events(stop_logger)
         stop_inotify()
         for task in tasks:
             task.cancel()
         await close_pool()
         await asyncio.sleep(0)
+        stop_logger.debug('Finished stopping')
 
     def stop_inotify():
         loop.remove_reader(fd)
@@ -634,7 +638,11 @@ def main():
         await cleanup()
         loop.stop()
 
-    loop.add_signal_handler(signal.SIGTERM, loop.create_task, cleanup_then_stop())
+    def run_cleanup_then_stop():
+        loop.create_task(cleanup_then_stop())
+
+    loop.add_signal_handler(signal.SIGINT, run_cleanup_then_stop)
+    loop.add_signal_handler(signal.SIGTERM, run_cleanup_then_stop)
     loop.run_forever()
 
 
