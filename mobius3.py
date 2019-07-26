@@ -472,6 +472,7 @@ def Syncer(
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
                 method, remote_url, headers=headers, body=body)
+            logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
         if code not in [b'200', b'204']:
