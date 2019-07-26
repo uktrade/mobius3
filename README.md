@@ -29,6 +29,21 @@ mobius3 can be used a standalone command-line application
 mobius3 /local/folder https://remote-bucket.s3-eu-west-2.amazonaws.com/ eu-west-2 --prefix folder/
 ```
 
+or from Docker
+
+```bash
+docker run --rm -it \
+    -v /local/folder:/home/mobius3/data \
+    -e AWS_ACCESS_KEY_ID \
+    -e AWS_SECRET_ACCESS_KEY \
+    quay.io/uktrade/mobius3:v0.0.6 \
+    mobius3 \
+        /home/mobius3/data \
+        https://mobius3-dev.s3-eu-west-2.amazonaws.com/ \
+        eu-west-2 \
+        --prefix my-prefix/
+```
+
 or from asyncio Python
 
 ```python
@@ -44,7 +59,7 @@ await start()
 await stop()
 ```
 
-AWS Credentials are taken from the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables.
+In all cases AWS Credentials are taken from the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables.
 
 
 ## Under the hood and limitations
