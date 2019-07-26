@@ -84,6 +84,15 @@ class InotifyFlags(enum.IntEnum):
     IN_ISDIR = 0x40000000
 
 
+class ChildAdapter(logging.LoggerAdapter):
+    def __init__(self, logger, extra):
+        super().__init__(logger, extra)
+        self.logger = logger
+        self.extra = \
+            {**logger.extra, **self.extra} if hasattr(logger, 'extra') else \
+            {**self.extra}
+
+
 WATCH_MASK = \
     InotifyEvents.IN_MODIFY | \
     InotifyEvents.IN_CLOSE_WRITE | \
@@ -267,7 +276,7 @@ def Syncer(
         else:
             recursive_delete(path, cache_directory)
 
-    def read_events(logger):
+    def read_events(parent_logger):
         FIONREAD_output = array.array('i', [0])
         fcntl.ioctl(fd, termios.FIONREAD, FIONREAD_output)
         bytes_to_read = FIONREAD_output[0]
@@ -278,41 +287,51 @@ def Syncer(
 
         offset = 0
         while offset < len(raw_bytes):
-            logger = logger
-
             wd, mask, _, length = EVENT_HEADER.unpack_from(raw_bytes, offset)
             offset += EVENT_HEADER.size
             path = PurePosixPath(raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8'))
             offset += length
 
+            event_id = uuid.uuid4().hex[:8]
+            logger = ChildAdapter(parent_logger, {'mobius3_event_id': event_id})
+            logger.debug('Received event')
+
             if mask & InotifyEvents.IN_Q_OVERFLOW:
+                logger.debug('IN_Q_OVERFLOW')
                 stop_inotify()
                 start_inotify(logger)
                 continue
 
             full_path = wds_to_path[wd] / path
+            logger.debug('Path: %s', full_path)
 
             if path.name.startswith(flush_file_root):
+                logger.debug('Looks like flush file')
                 try:
                     flush = flushes[full_path]
                 except KeyError:
-                    pass
+                    logger.debug('Flush file not found')
                 else:
+                    logger.debug('Flushing')
                     flush.set()
                     continue
 
             events = [event for event in InotifyEvents.__members__.values() if event & mask]
             item_type = 'dir' if mask & InotifyFlags.IN_ISDIR else 'file'
             for event in events:
+                handler_name = f'handle__{item_type}__{event.name}'
+                logger.debug('Handler: %s', handler_name)
                 try:
-                    handler = parent_locals[f'handle__{item_type}__{event.name}']
+                    handler = parent_locals[handler_name]
                 except KeyError:
+                    logger.debug('Handler not found')
                     continue
 
+                logger.debug('Calling handler')
                 try:
                     handler(logger, wd, full_path)
                 except Exception:
-                    logger.exception('Exception during handler %s', path)
+                    logger.exception('Exception calling handler')
 
     def handle__file__IN_CLOSE_WRITE(logger, _, path):
         schedule_upload(logger, path)
