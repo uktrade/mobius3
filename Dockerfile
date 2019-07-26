@@ -1,16 +1,15 @@
 FROM alpine:3.10
 
+COPY requirements.txt /app/
 RUN \
 	apk add --no-cache \
-		python3
-
-COPY LICENSE README.md mobius3.py setup.py requirements.txt app/
-WORKDIR /app
-
-RUN \
+		python3 && \
 	pip3 install \
-		. \
-		-r requirements.txt && \
+		-r /app/requirements.txt
+
+COPY LICENSE README.md mobius3.py setup.py /app/
+RUN \
+	pip3 install /app && \
 	pip3 check
 
 RUN \
