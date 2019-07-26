@@ -314,7 +314,7 @@ def Syncer(
             logger.debug('Path: %s', full_path)
 
             if path.name.startswith(flush_file_root):
-                logger.debug('Looks like flush file')
+                logger.debug('Possible flush file')
                 try:
                     flush = flushes[full_path]
                 except KeyError:
