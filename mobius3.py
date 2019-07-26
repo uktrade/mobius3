@@ -463,10 +463,11 @@ def Syncer(
     async def delete(logger, path):
         await locked_request(logger, b'DELETE', path)
 
-    async def locked_request(_, method, path, headers=(), body=empty_async_iterator):
+    async def locked_request(logger, method, path, headers=(), body=empty_async_iterator):
         remote_url = bucket + prefix + str(path.relative_to(directory))
 
         async with get_lock(path)(Mutex):
+            logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
                 method, remote_url, headers=headers, body=body)
             body_bytes = await buffered(body)
