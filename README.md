@@ -39,7 +39,7 @@ docker run --rm -it \
     quay.io/uktrade/mobius3:v0.0.6 \
     mobius3 \
         /home/mobius3/data \
-        https://mobius3-dev.s3-eu-west-2.amazonaws.com/ \
+        https://remote-bucket.s3-eu-west-2.amazonaws.com/ \
         eu-west-2 \
         --prefix my-prefix/
 ```
@@ -55,7 +55,7 @@ start, stop = Syncer('/local/folder', 'https://remote-bucket.s3-eu-west-2.amazon
 # raise exceptions on error, and then continue to sync in the background
 await start()
 
-# Will stop syncing
+# Will complete any remaining uploads
 await stop()
 ```
 
