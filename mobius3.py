@@ -583,11 +583,12 @@ def main():
     parser.add_argument(
         '--log-level',
         metavar='',
-        nargs='?', const=True, default='INFO')
+        nargs='?', const=True, default='DEBUG')
 
     parsed_args = parser.parse_args()
 
     stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(parsed_args.log_level)
     logger = logging.getLogger('mobius3')
     logger.setLevel(parsed_args.log_level)
     logger.addHandler(stdout_handler)
