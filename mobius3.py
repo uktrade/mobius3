@@ -86,15 +86,13 @@ class InotifyFlags(enum.IntEnum):
 
 class ChildAdapter(logging.LoggerAdapter):
     def __init__(self, logger, extra):
-        super().__init__(logger, extra)
-        self.logger = logger
-        self.extra = \
-            {**logger.extra, **self.extra} if hasattr(logger, 'extra') else \
-            {**self.extra}
+        super().__init__(
+            logger.logger if hasattr(logger, 'logger') else logger,
+            (logger.extra + extra) if hasattr(logger, 'extra') else extra
+        )
 
     def process(self, msg, kwargs):
-        extra = ','.join(list(f'{key}:{value}' for key, value in self.extra.items()))
-        return '[%s] %s' % (extra, msg), kwargs
+        return '[%s] %s' % (','.join(self.extra), msg), kwargs
 
 
 WATCH_MASK = \
@@ -122,11 +120,11 @@ def Syncer(
         get_pool=Pool,
         flush_file_root='.__mobius3__',
         flush_file_timeout=5,
-        default_logger_name='mobius3',
+        get_logger=lambda: logging.getLogger('mobius3'),
 ):
 
     loop = asyncio.get_running_loop()
-    default_logger = logging.getLogger(default_logger_name)
+    default_logger = get_logger()
 
     directory = PurePosixPath(directory)
 
@@ -191,7 +189,13 @@ def Syncer(
         for parent in reversed(list(path.parents)):
             directory = directory['children'][parent.name]
 
-        del directory['children'][path.name]
+        try:
+            del directory['children'][path.name]
+        except KeyError:
+            # Create events for files do not register a file in the cache,
+            # until they are scheduled for upload on modification. If this
+            # doesn't happen, then the file won't be in the cache
+            pass
 
     def tree_cache_directory(path):
         directory = tree_cache_root
@@ -223,7 +227,7 @@ def Syncer(
             read_events(logger)
 
         loop.add_reader(fd, _read_events)
-        watch_and_upload_directory(logger, directory)
+        watch_and_upload_directory(ChildAdapter(logger, ['start']), directory)
 
     async def stop(logger=default_logger):
         # Make every effort to read all incoming events and finish the queue
@@ -297,7 +301,7 @@ def Syncer(
             offset += length
 
             event_id = uuid.uuid4().hex[:8]
-            logger = ChildAdapter(parent_logger, {'mobius3_event_id': event_id})
+            logger = ChildAdapter(parent_logger, ['event', event_id])
             logger.debug('Received event')
 
             if mask & InotifyEvents.IN_Q_OVERFLOW:
@@ -475,7 +479,8 @@ def Syncer(
         if code not in [b'200', b'204']:
             raise Exception(code, body_bytes)
 
-    async def download(logger):
+    async def download(parent_logger):
+        logger = ChildAdapter(parent_logger, ['download'])
         try:
             async for path in list_keys_relative_to_prefix():
                 code, _, body = await signed_request(b'GET', bucket + prefix + path)
