@@ -175,7 +175,7 @@ def Syncer(
         request, credentials=get_credentials, service='s3', region=region,
     )
 
-    def add_file_to_tree_cache(path):
+    def ensure_file_in_tree_cache(path):
         directory = tree_cache_root
         for parent in reversed(list(path.parents)):
             directory = directory['children'].setdefault(parent.name, {
@@ -385,7 +385,7 @@ def Syncer(
         async def function():
             await upload(logger, path, version_current, version_original)
 
-        add_file_to_tree_cache(path)
+        ensure_file_in_tree_cache(path)
         job_queue.put_nowait((logger, function))
 
     def schedule_delete(logger, path):
