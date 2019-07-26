@@ -302,7 +302,6 @@ def Syncer(
 
             event_id = uuid.uuid4().hex[:8]
             logger = ChildAdapter(parent_logger, ['event', event_id])
-            logger.debug('Received event')
 
             if mask & InotifyEvents.IN_Q_OVERFLOW:
                 logger.debug('IN_Q_OVERFLOW')
@@ -314,7 +313,6 @@ def Syncer(
             logger.debug('Path: %s', full_path)
 
             if path.name.startswith(flush_file_root):
-                logger.debug('Possible flush file')
                 try:
                     flush = flushes[full_path]
                 except KeyError:
@@ -419,6 +417,7 @@ def Syncer(
     async def upload(logger, path, content_version_current, content_version_original):
         async def flush_events():
             flush_path = path.parent / (flush_file_root + uuid.uuid4().hex)
+            logger.debug('Creating flush file: %s', flush_path)
             event = asyncio.Event()
             flushes[flush_path] = event
             with open(flush_path, 'w'):
