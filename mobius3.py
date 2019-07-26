@@ -109,10 +109,11 @@ def Syncer(
         get_pool=Pool,
         flush_file_root='.__mobius3__',
         flush_file_timeout=5,
+        logger_name='mobius3',
 ):
 
     loop = asyncio.get_running_loop()
-    logger = logging.getLogger('mobius3')
+    logger = logging.getLogger(logger_name)
 
     directory = PurePosixPath(directory)
 
