@@ -60,7 +60,7 @@ Some of the above behaviours may change in future versions.
 
 ### Concurrency: responding to concurrent file modifications
 
-Mid-upload, a file can could modified by a local process, so in this case a corrupt file could be uploaded to S3. To prevent this mobius3 uses the following algorithm for each upload.
+Mid-upload, a file can could modified by a local process, so in this case a corrupt file could be uploaded to S3. To mitigate this mobius3 uses the following algorithm for each upload.
 
 - An IN_CLOSE_WRITE event is received for a file, and we start the upload.
 - Just before the end of the upload, the final bytes of the file are read from disk.
