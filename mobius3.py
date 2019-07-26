@@ -188,14 +188,7 @@ def Syncer(
         directory = tree_cache_root
         for parent in reversed(list(path.parents)):
             directory = directory['children'][parent.name]
-
-        try:
-            del directory['children'][path.name]
-        except KeyError:
-            # Create events for files do not register a file in the cache,
-            # until they are scheduled for upload on modification. If this
-            # doesn't happen, then the file won't be in the cache
-            pass
+        del directory['children'][path.name]
 
     def tree_cache_directory(path):
         directory = tree_cache_root
@@ -333,7 +326,6 @@ def Syncer(
                     logger.debug('Handler not found')
                     continue
 
-                logger.debug('Calling handler')
                 try:
                     handler(logger, wd, full_path)
                 except Exception:
@@ -394,7 +386,14 @@ def Syncer(
         async def function():
             await delete(logger, path)
 
-        remove_file_from_tree_cache(path)
+        try:
+            remove_file_from_tree_cache(path)
+        except KeyError:
+            # Create events for files do not register a file in the cache,
+            # until they are scheduled for upload on modification. If this
+            # doesn't happen, then the file won't be in the cache, and we
+            # have nothing to upload
+            return
         job_queue.put_nowait((logger, function))
 
     async def process_jobs():
