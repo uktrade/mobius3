@@ -186,13 +186,13 @@ def Syncer(
             directory = directory['children'][parent.name]
         return directory['children'][path.name]
 
-    async def start():
+    async def start(clogger=logger):
         nonlocal tasks
         tasks = [
             asyncio.create_task(process_jobs())
             for i in range(0, concurrent_uploads)
         ]
-        await download(logger)
+        await download(clogger)
         start_inotify()
 
     def start_inotify():
