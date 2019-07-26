@@ -92,6 +92,10 @@ class ChildAdapter(logging.LoggerAdapter):
             {**logger.extra, **self.extra} if hasattr(logger, 'extra') else \
             {**self.extra}
 
+    def process(self, msg, kwargs):
+        extra = ','.join(list(f'{key}:{value}' for key, value in self.extra.items()))
+        return '[%s] %s' % (extra, msg), kwargs
+
 
 WATCH_MASK = \
     InotifyEvents.IN_MODIFY | \
