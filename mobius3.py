@@ -11,6 +11,7 @@ import signal
 import ssl
 import sys
 import uuid
+import urllib.parse
 from pathlib import (
     PurePosixPath,
 )
@@ -23,19 +24,21 @@ from xml.etree import (
 )
 
 from aiodnsresolver import (
+    ResolverLoggerAdapter,
     Resolver,
 )
 from fifolock import (
     FifoLock,
 )
 from lowhaio import (
+    HttpLoggerAdapter,
     Pool,
     buffered,
     empty_async_iterator,
     timeout,
 )
 from lowhaio_aws_sigv4_unsigned_payload import (
-    signed,
+    aws_sigv4_headers,
 )
 
 
@@ -102,6 +105,23 @@ def get_logger_adapter_default(extra):
     return S3SyncLoggerAdapter(logging.getLogger('mobius3'), extra)
 
 
+def get_http_logger_adapter_default(s3sync_extra):
+    def _get_http_logger_adapter_default(http_extra):
+        s3sync_adapter = S3SyncLoggerAdapter(logging.getLogger('lowhaio'), s3sync_extra)
+        return HttpLoggerAdapter(s3sync_adapter, http_extra)
+    return _get_http_logger_adapter_default
+
+
+def get_resolver_logger_adapter_default(s3sync_extra):
+    def _get_resolver_logger_adapter_default(http_extra):
+        def __get_resolver_logger_adapter_default(resolver_extra):
+            s3sync_adapter = S3SyncLoggerAdapter(logging.getLogger('aiodnsresolver'), s3sync_extra)
+            http_adapter = HttpLoggerAdapter(s3sync_adapter, http_extra)
+            return ResolverLoggerAdapter(http_adapter, resolver_extra)
+        return __get_resolver_logger_adapter_default
+    return _get_resolver_logger_adapter_default
+
+
 WATCH_MASK = \
     InotifyEvents.IN_MODIFY | \
     InotifyEvents.IN_CLOSE_WRITE | \
@@ -128,6 +148,8 @@ def Syncer(
         flush_file_root='.__mobius3__',
         flush_file_timeout=5,
         get_logger_adapter=get_logger_adapter_default,
+        get_http_logger_adapter=get_http_logger_adapter_default,
+        get_resolver_logger_adapter=get_resolver_logger_adapter_default,
 ):
 
     loop = asyncio.get_running_loop()
@@ -176,6 +198,31 @@ def Syncer(
     }
 
     request, close_pool = get_pool()
+
+    def signed(request, credentials, service, region):
+        async def _signed(logger, method, url, params=(), headers=(),
+                          body=empty_async_iterator, body_args=(), body_kwargs=(),
+                          get_logger_adapter=get_http_logger_adapter,
+                          get_resolver_logger_adapter=get_resolver_logger_adapter):
+
+            body_hash = 'UNSIGNED-PAYLOAD'
+            access_key_id, secret_access_key, auth_headers = await credentials()
+
+            parsed_url = urllib.parse.urlsplit(url)
+            all_headers = aws_sigv4_headers(
+                access_key_id, secret_access_key, headers + auth_headers, service, region,
+                parsed_url.hostname, method.decode(), parsed_url.path, params, body_hash,
+            )
+
+            return await request(
+                method, url, params=params, headers=all_headers,
+                body=body, body_args=body_args, body_kwargs=body_kwargs,
+                get_logger_adapter=get_logger_adapter(logger.extra),
+                get_resolver_logger_adapter=get_resolver_logger_adapter(logger.extra),
+            )
+
+        return _signed
+
     signed_request = signed(
         request, credentials=get_credentials, service='s3', region=region,
     )
@@ -203,7 +250,7 @@ def Syncer(
             directory = directory['children'][parent.name]
         return directory['children'][path.name]
 
-    async def start(get_logger_adapter=get_logger_adapter_default):
+    async def start():
         logger = get_logger_adapter({'mobius3_component': 'start'})
         logger.debug('Starting')
         nonlocal tasks
@@ -226,12 +273,13 @@ def Syncer(
         fd = call_libc(libc.inotify_init)
 
         def _read_events():
-            read_events(get_logger_adapter_default({'mobius3_component': 'event'}))
+            logger = get_logger_adapter({'mobius3_component': 'event'})
+            read_events(logger)
 
         loop.add_reader(fd, _read_events)
         watch_and_upload_directory(logger, directory)
 
-    async def stop(get_logger_adapter=get_logger_adapter_default):
+    async def stop():
         # Make every effort to read all incoming events and finish the queue
         logger = get_logger_adapter({'mobius3_component': 'stop'})
         logger.debug('Stopping')
@@ -483,7 +531,7 @@ def Syncer(
         async with get_lock(path)(Mutex):
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
-                method, remote_url, headers=headers, body=body)
+                logger, method, remote_url, headers=headers, body=body)
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
@@ -492,8 +540,8 @@ def Syncer(
 
     async def download(logger):
         try:
-            async for path in list_keys_relative_to_prefix():
-                code, _, body = await signed_request(b'GET', bucket + prefix + path)
+            async for path in list_keys_relative_to_prefix(logger):
+                code, _, body = await signed_request(logger, b'GET', bucket + prefix + path)
                 if code != b'200':
                     continue
 
@@ -510,14 +558,14 @@ def Syncer(
         except Exception:
             logger.exception('Exception downloading original files')
 
-    async def list_keys_relative_to_prefix():
+    async def list_keys_relative_to_prefix(logger):
         async def _list(extra_query_items=()):
             query = (
                 ('max-keys', '1000'),
                 ('list-type', '2'),
                 ('prefix', prefix),
             ) + extra_query_items
-            code, _, body = await signed_request(b'GET', bucket, params=query)
+            code, _, body = await signed_request(logger, b'GET', bucket, params=query)
             body_bytes = await buffered(body)
             if code != b'200':
                 raise Exception(code, body_bytes)
