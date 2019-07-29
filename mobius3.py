@@ -603,7 +603,7 @@ def main():
     parser.add_argument(
         '--log-level',
         metavar='',
-        nargs='?', const=True, default='DEBUG')
+        nargs='?', const=True, default='WARNING')
 
     parsed_args = parser.parse_args()
 
