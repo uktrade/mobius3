@@ -1179,7 +1179,10 @@ def get_docker_link_and_minio_compatible_http_pool():
 
     return Pool(
         # 0x20 encoding does not appear to work with linked containers
-        get_dns_resolver=lambda: Resolver(transform_fqdn=transform_fqdn),
+        get_dns_resolver=lambda **kwargs: Resolver(**{
+            'transform_fqdn': transform_fqdn,
+            **kwargs,
+        }),
         # We use self-signed certs locally
         get_ssl_context=lambda: ssl_context,
     )

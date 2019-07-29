@@ -84,15 +84,22 @@ class InotifyFlags(enum.IntEnum):
     IN_ISDIR = 0x40000000
 
 
-class ChildAdapter(logging.LoggerAdapter):
-    def __init__(self, logger, extra):
-        super().__init__(
-            logger.logger if hasattr(logger, 'logger') else logger,
-            (logger.extra + extra) if hasattr(logger, 'extra') else extra
-        )
-
+class S3SyncLoggerAdapter(logging.LoggerAdapter):
     def process(self, msg, kwargs):
-        return '[%s] %s' % (','.join(self.extra), msg), kwargs
+        return \
+            ('[s3sync] %s' % (msg,), kwargs) if not self.extra else \
+            ('[s3sync:%s] %s' % (','.join(str(v) for v in self.extra.values()), msg), kwargs)
+
+
+def child_adapter(s3sync_adapter, extra):
+    return S3SyncLoggerAdapter(
+        s3sync_adapter.logger,
+        {**s3sync_adapter.extra, **extra},
+    )
+
+
+def get_logger_adapter_default(extra):
+    return S3SyncLoggerAdapter(logging.getLogger('mobius3'), extra)
 
 
 WATCH_MASK = \
@@ -120,11 +127,11 @@ def Syncer(
         get_pool=Pool,
         flush_file_root='.__mobius3__',
         flush_file_timeout=5,
-        get_logger=lambda: logging.getLogger('mobius3'),
+        get_logger_adapter=get_logger_adapter_default,
 ):
 
     loop = asyncio.get_running_loop()
-    default_logger = get_logger()
+    logger = get_logger_adapter({})
 
     directory = PurePosixPath(directory)
 
@@ -196,7 +203,8 @@ def Syncer(
             directory = directory['children'][parent.name]
         return directory['children'][path.name]
 
-    async def start(logger=default_logger):
+    async def start(get_logger_adapter=get_logger_adapter_default):
+        logger = get_logger_adapter({'mobius3_component': 'start'})
         logger.debug('Starting')
         nonlocal tasks
         tasks = [
@@ -218,25 +226,25 @@ def Syncer(
         fd = call_libc(libc.inotify_init)
 
         def _read_events():
-            read_events(logger)
+            read_events(get_logger_adapter_default({'mobius3_component': 'event'}))
 
         loop.add_reader(fd, _read_events)
-        watch_and_upload_directory(ChildAdapter(logger, ['start']), directory)
+        watch_and_upload_directory(logger, directory)
 
-    async def stop(logger=default_logger):
+    async def stop(get_logger_adapter=get_logger_adapter_default):
         # Make every effort to read all incoming events and finish the queue
-        stop_logger = ChildAdapter(logger, ['stop'])
-        stop_logger.debug('Stopping')
-        read_events(stop_logger)
+        logger = get_logger_adapter({'mobius3_component': 'stop'})
+        logger.debug('Stopping')
+        read_events(logger)
         while job_queue._unfinished_tasks:
             await job_queue.join()
-            read_events(stop_logger)
+            read_events(logger)
         stop_inotify()
         for task in tasks:
             task.cancel()
         await close_pool()
         await asyncio.sleep(0)
-        stop_logger.debug('Finished stopping')
+        logger.debug('Finished stopping')
 
     def stop_inotify():
         loop.remove_reader(fd)
@@ -298,7 +306,7 @@ def Syncer(
             offset += length
 
             event_id = uuid.uuid4().hex[:8]
-            logger = ChildAdapter(parent_logger, ['event', event_id])
+            read_events(child_adapter(parent_logger, {'event': event_id}))
 
             if mask & InotifyEvents.IN_Q_OVERFLOW:
                 logger.debug('IN_Q_OVERFLOW')
@@ -482,8 +490,7 @@ def Syncer(
         if code not in [b'200', b'204']:
             raise Exception(code, body_bytes)
 
-    async def download(parent_logger):
-        logger = ChildAdapter(parent_logger, ['download'])
+    async def download(logger):
         try:
             async for path in list_keys_relative_to_prefix():
                 code, _, body = await signed_request(b'GET', bucket + prefix + path)
@@ -602,7 +609,7 @@ def main():
 
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setLevel(parsed_args.log_level)
-    logger = logging.getLogger('mobius3')
+    logger = logging.getLogger()
     logger.setLevel(parsed_args.log_level)
     logger.addHandler(stdout_handler)
 
@@ -616,7 +623,10 @@ def main():
 
     pool_args = {
         **({
-            'get_dns_resolver': lambda: Resolver(transform_fqdn=transform_fqdn_no_0x20_encoding),
+            'get_dns_resolver': lambda **kwargs: Resolver(**{
+                **kwargs,
+                'transform_fqdn': transform_fqdn_no_0x20_encoding,
+            }),
         } if parsed_args.disable_0x20_dns_encoding else {}),
         **({
             'get_ssl_context': get_ssl_context_without_verifcation,
