@@ -2,9 +2,11 @@ import array
 import argparse
 import asyncio
 import ctypes
+import datetime
 import enum
 import fcntl
 import termios
+import json
 import logging
 import os
 import signal
@@ -135,8 +137,39 @@ WATCH_MASK = \
 EVENT_HEADER = struct.Struct('iIII')
 
 
-async def get_credentials_from_environment():
+async def get_credentials_from_environment(_):
     return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
+
+
+def get_credentials_from_ecs_endpoint():
+    aws_access_key_id = None
+    aws_secret_access_key = None
+    pre_auth_headers = None
+    expiration = datetime.datetime.fromtimestamp(0)
+
+    async def _get_credentials(request):
+        nonlocal aws_access_key_id
+        nonlocal aws_secret_access_key
+        nonlocal pre_auth_headers
+        nonlocal expiration
+
+        now = datetime.datetime.now()
+
+        if now > expiration:
+            _, _, body = await request(
+                b'GET',
+                'http://169.254.170.2' + os.environ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI']
+            )
+            creds = json.loads(await buffered(body))
+            aws_access_key_id = creds['AccessKeyId']
+            aws_secret_access_key = creds['SecretAccessKey']
+            pre_auth_headers = (
+                (b'x-amz-security-token', creds['Token'].encode(),),
+            )
+
+        return aws_access_key_id, aws_secret_access_key, pre_auth_headers
+
+    return _get_credentials
 
 
 def Syncer(
@@ -206,7 +239,7 @@ def Syncer(
                           get_resolver_logger_adapter=get_resolver_logger_adapter):
 
             body_hash = 'UNSIGNED-PAYLOAD'
-            access_key_id, secret_access_key, auth_headers = await credentials()
+            access_key_id, secret_access_key, auth_headers = await credentials(request)
 
             parsed_url = urllib.parse.urlsplit(url)
             all_headers = aws_sigv4_headers(
@@ -634,6 +667,14 @@ def main():
         help='The region of the bucket\ne.g. eu-west-2')
 
     parser.add_argument(
+        '--credentials-source',
+        metavar='credentials-source',
+        default='envrionment-variables',
+        nargs='?',
+        choices=['environment-variables', 'ecs-container-endpoint'],
+        help='Where to pickup AWS credentials',
+    )
+    parser.add_argument(
         '--prefix',
         metavar='prefix',
         default='',
@@ -681,12 +722,16 @@ def main():
         } if parsed_args.disable_ssl_verification else {}),
     }
 
+    creds_source = parsed_args.credentials_source
     syncer_args = {
         'directory': parsed_args.directory,
         'bucket': parsed_args.bucket,
         'prefix': parsed_args.prefix,
         'region': parsed_args.region,
-        'get_pool': lambda: Pool(**pool_args)
+        'get_pool': lambda: Pool(**pool_args),
+        'get_credentials':
+            get_credentials_from_environment if creds_source == 'envrionment-variables' else
+            get_credentials_from_ecs_endpoint()
     }
 
     loop = asyncio.get_event_loop()
