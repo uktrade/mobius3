@@ -306,7 +306,7 @@ def Syncer(
             offset += length
 
             event_id = uuid.uuid4().hex[:8]
-            read_events(child_adapter(parent_logger, {'event': event_id}))
+            logger = child_adapter(parent_logger, {'event': event_id})
 
             if mask & InotifyEvents.IN_Q_OVERFLOW:
                 logger.debug('IN_Q_OVERFLOW')
