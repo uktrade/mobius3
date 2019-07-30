@@ -578,7 +578,7 @@ def Syncer(
                 if code != b'200':
                     continue
 
-                parent_directory = directory / PurePosixPath(path).parent
+                parent_directory = directory / (PurePosixPath(path).parent)
                 try:
                     os.makedirs(parent_directory)
                 except FileExistsError:
@@ -588,12 +588,13 @@ def Syncer(
                 except Exception:
                     logger.exception('Unable to create directory: %s', parent_directory)
 
+                full_path = directory / path
                 try:
-                    with open(directory / path, 'wb') as file:
+                    with open(full_path, 'wb') as file:
                         async for chunk in body:
                             file.write(chunk)
                 except Exception:
-                    logger.exception('Unable to save to file: %s', path)
+                    logger.exception('Unable to save to file: %s', full_path)
 
         except asyncio.CancelledError:
             raise
