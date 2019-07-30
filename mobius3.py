@@ -288,7 +288,7 @@ def Syncer(
         logger.info('Starting')
         nonlocal upload_tasks
         upload_tasks = [
-            asyncio.create_task(process_jobs())
+            asyncio.create_task(process_jobs(upload_job_queue))
             for i in range(0, concurrent_uploads)
         ]
         await download(logger)
@@ -492,9 +492,9 @@ def Syncer(
             return
         upload_job_queue.put_nowait((logger, function))
 
-    async def process_jobs():
+    async def process_jobs(queue):
         while True:
-            logger, job = await upload_job_queue.get()
+            logger, job = await queue.get()
             try:
                 await job()
             except Exception as exception:
@@ -518,7 +518,7 @@ def Syncer(
                 ):
                     logger.exception('Exception during %s', job)
             finally:
-                upload_job_queue.task_done()
+                queue.task_done()
 
     async def upload(logger, path, content_version_current, content_version_original):
         logger.info('Uploading %s', path)
