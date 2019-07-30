@@ -285,7 +285,7 @@ def Syncer(
 
     async def start():
         logger = get_logger_adapter({'mobius3_component': 'start'})
-        logger.debug('Starting')
+        logger.info('Starting')
         nonlocal tasks
         tasks = [
             asyncio.create_task(process_jobs())
@@ -293,6 +293,7 @@ def Syncer(
         ]
         await download(logger)
         start_inotify(logger)
+        logger.info('Finished starting')
 
     def start_inotify(logger):
         nonlocal wds_to_path
@@ -315,7 +316,7 @@ def Syncer(
     async def stop():
         # Make every effort to read all incoming events and finish the queue
         logger = get_logger_adapter({'mobius3_component': 'stop'})
-        logger.debug('Stopping')
+        logger.info('Stopping')
         read_events(logger)
         while job_queue._unfinished_tasks:
             await job_queue.join()
@@ -325,7 +326,7 @@ def Syncer(
             task.cancel()
         await close_pool()
         await asyncio.sleep(0)
-        logger.debug('Finished stopping')
+        logger.info('Finished stopping')
 
     def stop_inotify():
         loop.remove_reader(fd)
@@ -345,6 +346,7 @@ def Syncer(
         # already been created
         for root, dirs, files in os.walk(path):
             for file in files:
+                logger.info('Scheduling upload: %s', PurePosixPath(root) / file)
                 schedule_upload(logger, PurePosixPath(root) / file)
 
             for directory in dirs:
@@ -355,6 +357,7 @@ def Syncer(
         def recursive_delete(prefix, directory):
             for child_name, child in list(directory['children'].items()):
                 if child['type'] == 'file':
+                    logger.info('Scheduling delete: %s', prefix / child_name)
                     schedule_delete(logger, prefix / child_name)
                 else:
                     recursive_delete(prefix / child_name, child)
@@ -390,7 +393,7 @@ def Syncer(
             logger = child_adapter(parent_logger, {'event': event_id})
 
             if mask & InotifyEvents.IN_Q_OVERFLOW:
-                logger.debug('IN_Q_OVERFLOW')
+                logger.warning('IN_Q_OVERFLOW. Restarting')
                 stop_inotify()
                 start_inotify(logger)
                 continue
@@ -498,7 +501,18 @@ def Syncer(
                 if isinstance(exception, asyncio.CancelledError):
                     raise
                 if (
+                        isinstance(exception, FileContentChanged) or
+                        isinstance(exception.__cause__, FileContentChanged)
+                ):
+                    logger.info('Content changed, aborting: %s', FileContentChanged)
+                if (
+                        isinstance(exception, FileNotFoundError) or
+                        isinstance(exception.__cause__, FileNotFoundError)
+                ):
+                    logger.info('File not found: %s', FileNotFoundError)
+                if (
                         not isinstance(exception, FileNotFoundError) and
+                        not isinstance(exception.__cause__, FileNotFoundError) and
                         not isinstance(exception, FileContentChanged) and
                         not isinstance(exception.__cause__, FileContentChanged)
                 ):
@@ -507,6 +521,8 @@ def Syncer(
                 job_queue.task_done()
 
     async def upload(logger, path, content_version_current, content_version_original):
+        logger.info('Uploading %s', path)
+
         async def flush_events():
             flush_path = path.parent / (flush_file_root + uuid.uuid4().hex)
             logger.debug('Creating flush file: %s', flush_path)
@@ -540,7 +556,7 @@ def Syncer(
                         await flush_events()
 
                     if content_version_current != content_version_original:
-                        raise FileContentChanged()
+                        raise FileContentChanged(path)
 
                     yield chunk
 
@@ -550,12 +566,13 @@ def Syncer(
         # we have queued the upload
         await flush_events()
         if content_version_current != content_version_original:
-            raise FileContentChanged()
+            raise FileContentChanged(path)
 
         await locked_request(logger, b'PUT', path, body=file_body,
                              headers=((b'content-length', content_length),))
 
     async def delete(logger, path):
+        logger.info('Deleting %s', path)
         await locked_request(logger, b'DELETE', path)
 
     async def locked_request(logger, method, path, headers=(), body=empty_async_iterator):
@@ -574,6 +591,7 @@ def Syncer(
     async def download(logger):
         try:
             async for path in list_keys_relative_to_prefix(logger):
+                logger.info('Downloading: %s', path)
                 code, _, body = await signed_request(logger, b'GET', bucket + prefix + path)
                 if code != b'200':
                     continue
