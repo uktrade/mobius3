@@ -608,25 +608,26 @@ def Syncer(
 
     def schedule_download(logger, path):
         async def download():
-            logger.info('Downloading: %s', path)
-            code, _, body = await signed_request(logger, b'GET', bucket + prefix + path)
-            if code != b'200':
-                raise Exception(code)
-
-            parent_directory = directory / (PurePosixPath(path).parent)
-            try:
-                os.makedirs(parent_directory)
-            except FileExistsError:
-                logger.debug('Already exists: %s', parent_directory)
-            except NotADirectoryError:
-                logger.debug('Not a directory: %s', parent_directory)
-            except Exception:
-                logger.debug('Unable to create directory: %s', parent_directory)
-
             full_path = directory / path
-            with open(full_path, 'wb') as file:
-                async for chunk in body:
-                    file.write(chunk)
+            async with get_lock(full_path)(Mutex):
+                logger.info('Downloading: %s', full_path)
+                code, _, body = await signed_request(logger, b'GET', bucket + prefix + path)
+                if code != b'200':
+                    raise Exception(code)
+
+                parent_directory = directory / (PurePosixPath(path).parent)
+                try:
+                    os.makedirs(parent_directory)
+                except FileExistsError:
+                    logger.debug('Already exists: %s', parent_directory)
+                except NotADirectoryError:
+                    logger.debug('Not a directory: %s', parent_directory)
+                except Exception:
+                    logger.debug('Unable to create directory: %s', parent_directory)
+
+                with open(full_path, 'wb') as file:
+                    async for chunk in body:
+                        file.write(chunk)
 
         download_job_queue.put_nowait((logger, download))
 
