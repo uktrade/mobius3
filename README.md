@@ -59,7 +59,20 @@ await start()
 await stop()
 ```
 
-In all cases AWS Credentials are taken from the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables.
+In the cases above AWS credentials are taken from the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables. To use ECS-provided credentials / IAM Roles, you can pass `--credentials-source ecs-container-endpoint` as a command line option. In an ECS task definition, this would look something like the below
+
+```json
+{
+	"command": [
+		"mobius3",
+		"/home/mobius3/data",
+		"https://remote-bucket.s3-eu-west-2.amazonaws.com/",
+		"eu-west-2",
+		"--prefix", "my-prefix/"
+		"--credentials-source", "ecs-container-endpoint"
+	]
+}
+```
 
 
 ## Under the hood and limitations
