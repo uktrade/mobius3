@@ -539,21 +539,21 @@ def Syncer(
             finally:
                 queue.task_done()
 
+    async def flush_events(logger, path):
+        flush_path = path.parent / (flush_file_root + uuid.uuid4().hex)
+        logger.debug('Creating flush file: %s', flush_path)
+        event = asyncio.Event()
+        flushes[flush_path] = event
+        with open(flush_path, 'w'):
+            pass
+        os.remove(flush_path)
+        # In rare cases, the event queue could be full and the event for
+        # the flush file is dropped
+        with timeout(loop, flush_file_timeout):
+            await event.wait()
+
     async def upload(logger, path, content_version_current, content_version_original):
         logger.info('Uploading %s', path)
-
-        async def flush_events():
-            flush_path = path.parent / (flush_file_root + uuid.uuid4().hex)
-            logger.debug('Creating flush file: %s', flush_path)
-            event = asyncio.Event()
-            flushes[flush_path] = event
-            with open(flush_path, 'w'):
-                pass
-            os.remove(flush_path)
-            # In rare cases, the event queue could be full and the event for
-            # the flush file is dropped
-            with timeout(loop, flush_file_timeout):
-                await event.wait()
 
         def with_is_last(iterable):
             try:
@@ -572,7 +572,7 @@ def Syncer(
 
                 for is_last, chunk in with_is_last(iter(lambda: file.read(16384), b'')):
                     if is_last:
-                        await flush_events()
+                        await flush_events(logger, path)
 
                     if content_version_current != content_version_original:
                         raise FileContentChanged(path)
@@ -583,7 +583,7 @@ def Syncer(
 
         # Ensure we only progress if the content length hasn't changed since
         # we have queued the upload
-        await flush_events()
+        await flush_events(logger, path)
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
