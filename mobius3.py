@@ -210,6 +210,7 @@ def Syncer(
 
     # To prevent concurrent HTTP requests on the same files where order of
     # receipt by S3 cannot be guaranteed, we wrap each request by a lock
+    # e.g. to prevent a DELETE overtaking a PUT
     path_locks = WeakValueDictionary()
 
     # A path -> content version dict is maintained during queues and uploads,
