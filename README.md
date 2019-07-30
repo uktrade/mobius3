@@ -74,6 +74,8 @@ In the cases above AWS credentials are taken from the `AWS_ACCESS_KEY_ID` and `A
 }
 ```
 
+If using mobius3 to sync data in a volume accessed by multiple containers, you may have to create your own Dockerfile that runs mobius3 under a user with the same ID as the users in the other containers.
+
 
 ## Under the hood and limitations
 
