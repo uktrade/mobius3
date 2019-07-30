@@ -179,8 +179,9 @@ def Syncer(
         concurrent_downloads=5,
         get_credentials=get_credentials_from_environment,
         get_pool=Pool,
-        flush_file_root='.__mobius3__',
+        flush_file_root='.__mobius3_flush__',
         flush_file_timeout=5,
+        download_directory='.mobius3',
         get_logger_adapter=get_logger_adapter_default,
         get_http_logger_adapter=get_http_logger_adapter_default,
         get_resolver_logger_adapter=get_resolver_logger_adapter_default,
@@ -293,6 +294,7 @@ def Syncer(
         logger.info('Starting')
         nonlocal upload_tasks
         nonlocal download_tasks
+        os.mkdir(directory / download_directory)
         upload_tasks = [
             asyncio.create_task(process_jobs(upload_job_queue))
             for i in range(0, concurrent_uploads)
@@ -423,6 +425,10 @@ def Syncer(
                     logger.debug('Flushing')
                     flush.set()
                     continue
+
+            if full_path == directory / download_directory:
+                logger.debug('File inside download directory')
+                continue
 
             events = [event for event in InotifyEvents.__members__.values() if event & mask]
             item_type = 'dir' if mask & InotifyFlags.IN_ISDIR else 'file'
@@ -609,25 +615,36 @@ def Syncer(
     def schedule_download(logger, path):
         async def download():
             full_path = directory / path
-            async with get_lock(full_path)(Mutex):
-                logger.info('Downloading: %s', full_path)
-                code, _, body = await signed_request(logger, b'GET', bucket + prefix + path)
-                if code != b'200':
-                    raise Exception(code)
 
-                parent_directory = directory / (PurePosixPath(path).parent)
-                try:
-                    os.makedirs(parent_directory)
-                except FileExistsError:
-                    logger.debug('Already exists: %s', parent_directory)
-                except NotADirectoryError:
-                    logger.debug('Not a directory: %s', parent_directory)
-                except Exception:
-                    logger.debug('Unable to create directory: %s', parent_directory)
+            logger.info('Downloading: %s', full_path)
+            code, _, body = await signed_request(logger, b'GET', bucket + prefix + path)
+            if code != b'200':
+                await buffered(body)  # Fetch all bytes and return to pool
+                raise Exception(code)
 
-                with open(full_path, 'wb') as file:
+            parent_directory = directory / (PurePosixPath(path).parent)
+            try:
+                os.makedirs(parent_directory)
+            except FileExistsError:
+                logger.debug('Already exists: %s', parent_directory)
+            except NotADirectoryError:
+                logger.debug('Not a directory: %s', parent_directory)
+            except Exception:
+                logger.debug('Unable to create directory: %s', parent_directory)
+
+            temporary_path = directory / download_directory / uuid.uuid4().hex
+            try:
+                with open(temporary_path, 'wb') as file:
                     async for chunk in body:
                         file.write(chunk)
+
+                async with get_lock(full_path)(Mutex):
+                    os.replace(temporary_path, full_path)
+            finally:
+                try:
+                    os.remove(temporary_path)
+                except FileNotFoundError:
+                    pass
 
         download_job_queue.put_nowait((logger, download))
 
