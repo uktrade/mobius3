@@ -17,4 +17,6 @@ RUN \
 	adduser -S mobius3 -G mobius3
 USER mobius3
 
+RUN mkdir /home/mobius3/data
+
 WORKDIR /home/mobius3
