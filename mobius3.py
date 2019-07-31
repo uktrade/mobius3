@@ -701,7 +701,7 @@ def Syncer(
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.warning('Failed to list files')
+                logger.exception('Failed to list files')
             await download_job_queue.join()
             await asyncio.sleep(download_interval)
 
