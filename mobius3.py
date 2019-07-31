@@ -470,7 +470,6 @@ def Syncer(
         schedule_upload(logger, path)
 
     def handle__dir__IN_CREATE(logger, _, __, path):
-        recently_modified.add(path)
         watch_and_upload_directory(logger, path, WATCH_MASK)
 
     def handle__file__IN_DELETE(logger, _, __, path):
