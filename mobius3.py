@@ -915,7 +915,7 @@ def main():
 
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setLevel(parsed_args.log_level)
-    logger = logging.getLogger()
+    logger = logging.getLogger('mobius3')
     logger.setLevel(parsed_args.log_level)
     logger.addHandler(stdout_handler)
 
