@@ -1339,6 +1339,8 @@ async def terminate(process):
         process.terminate()
     except ProcessLookupError:
         pass
+    else:
+        await process.wait()
 
 
 def syncer_for(path, prefix='',
