@@ -133,6 +133,10 @@ WATCH_MASK = \
     InotifyEvents.IN_DELETE | \
     InotifyFlags.IN_ONLYDIR
 
+# We watch the download directly only for moves to be able to use the cookie
+# to determine if a move is from a download so we then don't re-upload it
+DOWNLOAD_WATCH_MASK = \
+    InotifyEvents.IN_MOVED_FROM
 
 EVENT_HEADER = struct.Struct('iIII')
 
@@ -185,6 +189,7 @@ def Syncer(
         get_logger_adapter=get_logger_adapter_default,
         get_http_logger_adapter=get_http_logger_adapter_default,
         get_resolver_logger_adapter=get_resolver_logger_adapter_default,
+        local_modification_persistance=120,
 ):
 
     loop = asyncio.get_running_loop()
@@ -227,6 +232,14 @@ def Syncer(
     # the uploads directory to ensure that we have processed any change events
     # that would upate the corresponding item in content_versions
     flushes = WeakValueDictionary()
+
+    # On every change to a local file, we forbid it being changed from S3
+    recently_modified = ExpiringSet(loop, local_modification_persistance)
+
+    # When moving download files from the hidden directory to their final
+    # position, we would like to detect if this is indeed a move from a
+    # download (in which case we don't re-upload), or a real move from
+    download_cookies = ExpiringSet(loop, 10)
 
     # A cache of the file tree is maintained. Used for directory renames: we
     # only get notified of renames _after_ they have happened, we need a way
@@ -324,7 +337,8 @@ def Syncer(
             read_events(logger)
 
         loop.add_reader(fd, _read_events)
-        watch_and_upload_directory(logger, directory)
+        watch_directory(download_directory, DOWNLOAD_WATCH_MASK)
+        watch_and_upload_directory(logger, directory, WATCH_MASK)
 
     async def stop():
         # Make every effort to read all incoming events and finish the queue
@@ -347,9 +361,9 @@ def Syncer(
         loop.remove_reader(fd)
         os.close(fd)
 
-    def watch_and_upload_directory(logger, path):
+    def watch_directory(path, mask):
         try:
-            wd = call_libc(libc.inotify_add_watch, fd, str(path).encode('utf-8'), WATCH_MASK)
+            wd = call_libc(libc.inotify_add_watch, fd, str(path).encode('utf-8'), mask)
         except (NotADirectoryError, FileNotFoundError):
             return
 
@@ -357,15 +371,20 @@ def Syncer(
         # existing entry, but that's fine
         wds_to_path[wd] = path
 
+    def watch_and_upload_directory(logger, path, mask):
+        watch_directory(path, mask)
+
         # By the time we've added a watcher, files or subdirectories may have
         # already been created
         for root, dirs, files in os.walk(path):
+            if PurePosixPath(root) == directory / download_directory:
+                continue
             for file in files:
                 logger.info('Scheduling upload: %s', PurePosixPath(root) / file)
                 schedule_upload(logger, PurePosixPath(root) / file)
 
-            for directory in dirs:
-                watch_and_upload_directory(logger, PurePosixPath(root) / directory)
+            for d in dirs:
+                watch_and_upload_directory(logger, PurePosixPath(root) / d, mask)
 
     def remote_delete_directory(logger, path):
         # Directory nesting not likely to be large
@@ -399,7 +418,7 @@ def Syncer(
 
         offset = 0
         while offset < len(raw_bytes):
-            wd, mask, _, length = EVENT_HEADER.unpack_from(raw_bytes, offset)
+            wd, mask, cookie, length = EVENT_HEADER.unpack_from(raw_bytes, offset)
             offset += EVENT_HEADER.size
             path = PurePosixPath(raw_bytes[offset:offset+length].rstrip(b'\0').decode('utf-8'))
             offset += length
@@ -407,31 +426,18 @@ def Syncer(
             event_id = uuid.uuid4().hex[:8]
             logger = child_adapter(parent_logger, {'event': event_id})
 
-            if mask & InotifyEvents.IN_Q_OVERFLOW:
-                logger.warning('IN_Q_OVERFLOW. Restarting')
-                stop_inotify()
-                start_inotify(logger)
-                continue
-
-            full_path = wds_to_path[wd] / path
+            full_path = \
+                wds_to_path[wd] / path if wd != -1 else \
+                directory  # Overflow event
             logger.debug('Path: %s', full_path)
 
-            if path.name.startswith(flush_file_root):
-                try:
-                    flush = flushes[full_path]
-                except KeyError:
-                    logger.debug('Flush file not found')
-                else:
-                    logger.debug('Flushing')
-                    flush.set()
-                    continue
-
-            if full_path == directory / download_directory:
-                logger.debug('File inside download directory')
-                continue
-
             events = [event for event in InotifyEvents.__members__.values() if event & mask]
-            item_type = 'dir' if mask & InotifyFlags.IN_ISDIR else 'file'
+            item_type = \
+                'overflow' if mask & InotifyEvents.IN_Q_OVERFLOW else \
+                'flush' if path.name.startswith(flush_file_root) and full_path in flushes else \
+                'download' if full_path.parent == directory / download_directory else \
+                'dir' if mask & InotifyFlags.IN_ISDIR else \
+                'file'
             for event in events:
                 handler_name = f'handle__{item_type}__{event.name}'
                 logger.debug('Handler: %s', handler_name)
@@ -442,40 +448,61 @@ def Syncer(
                     continue
 
                 try:
-                    handler(logger, wd, full_path)
+                    handler(logger, wd, cookie, full_path)
                 except Exception:
                     logger.exception('Exception calling handler')
 
-    def handle__file__IN_CLOSE_WRITE(logger, _, path):
+    def handle__overflow__IN_Q_OVERFLOW(logger, _, __, ___):
+        logger.warning('IN_Q_OVERFLOW. Restarting')
+        stop_inotify()
+        start_inotify(logger)
+
+    def handle__flush__IN_CREATE(logger, _, __, path):
+        flush = flushes[path]
+        logger.debug('Flushing: %s', path)
+        flush.set()
+
+    def handle__download__IN_MOVE_FROM(_, __, cookie, ___):
+        download_cookies.add(cookie)
+
+    def handle__file__IN_CLOSE_WRITE(logger, _, __, path):
+        recently_modified.add(path)
         schedule_upload(logger, path)
 
-    def handle__dir__IN_CREATE(logger, _, path):
-        watch_and_upload_directory(logger, path)
+    def handle__dir__IN_CREATE(logger, _, __, path):
+        recently_modified.add(path)
+        watch_and_upload_directory(logger, path, WATCH_MASK)
 
-    def handle__file__IN_DELETE(logger, _, path):
+    def handle__file__IN_DELETE(logger, _, __, path):
+        recently_modified.add(path)
         # Correctness does not depend on this bump: it's an optimisation
         # that ensures we abandon any upload of this path ahead of us
         # in the queue
         bump_content_version(path)
         schedule_delete(logger, path)
 
-    def handle__file__IN_IGNORED(_, wd, __):
+    def handle__file__IN_IGNORED(_, wd, __, ___):
         # For some reason IN_ISDIR is not set with IN_IGNORED
         del wds_to_path[wd]
 
-    def handle__file__IN_MODIFY(_, __, path):
+    def handle__file__IN_MODIFY(_, __, ___, path):
         bump_content_version(path)
 
-    def handle__dir__IN_MOVED_FROM(logger, _, path):
+    def handle__dir__IN_MOVED_FROM(logger, _, __, path):
         remote_delete_directory(logger, path)
 
-    def handle__file__IN_MOVED_FROM(logger, _, path):
+    def handle__file__IN_MOVED_FROM(logger, _, __, path):
+        recently_modified.add(path)
         schedule_delete(logger, path)
 
-    def handle__dir__IN_MOVED_TO(logger, _, path):
-        watch_and_upload_directory(logger, path)
+    def handle__dir__IN_MOVED_TO(logger, _, __, path):
+        watch_and_upload_directory(logger, path, WATCH_MASK)
 
-    def handle__file__IN_MOVED_TO(logger, _, path):
+    def handle__file__IN_MOVED_TO(logger, _, cookie, path):
+        if cookie in download_cookies:
+            return
+        recently_modified.add(path)
+        bump_content_version(path)
         schedule_upload(logger, path)
 
     def get_content_version(path):
@@ -498,8 +525,11 @@ def Syncer(
         upload_job_queue.put_nowait((logger, function))
 
     def schedule_delete(logger, path):
+        version_current = get_content_version(path)
+        version_original = version_current.copy()
+
         async def function():
-            await delete(logger, path)
+            await delete(logger, path, version_current, version_original)
 
         try:
             remove_file_from_tree_cache(path)
@@ -590,8 +620,22 @@ def Syncer(
         await locked_request(logger, b'PUT', path, body=file_body,
                              headers=((b'content-length', content_length),))
 
-    async def delete(logger, path):
+    async def delete(logger, path, content_version_current, content_version_original):
         logger.info('Deleting %s', path)
+
+        # We may have recently had an download from S3, so we don't carry on
+        # with the DELETE (if we did, we would then delete the local file
+        # on the next download)
+        try:
+            await flush_events(logger, path)
+        except FileNotFoundError:
+            # The local folder in which the file was may have been deleted,
+            # but we still want to carry on with the remote delete
+            pass
+
+        if content_version_current != content_version_original:
+            raise FileContentChanged(path)
+
         await locked_request(logger, b'DELETE', path)
 
     async def locked_request(logger, method, path, headers=(), body=empty_async_iterator):
@@ -638,8 +682,11 @@ def Syncer(
                     async for chunk in body:
                         file.write(chunk)
 
-                async with get_lock(full_path)(Mutex):
-                    os.replace(temporary_path, full_path)
+                # The below two lines are atomic from the event-loop point of
+                # view, so queued and concurrent PUTs would abort, otherwise
+                # the PUT may upload a corrupted file
+                os.replace(temporary_path, full_path)
+                bump_content_version(path)
             finally:
                 try:
                     os.remove(temporary_path)
@@ -699,6 +746,44 @@ def Syncer(
     parent_locals = locals()
 
     return start, stop
+
+
+class ExpiringDict:
+
+    def __init__(self, loop, seconds):
+        self._loop = loop
+        self._seconds = seconds
+        self._store = {}
+
+    def __getitem__(self, key):
+        return self._store[key][0]
+
+    def __setitem__(self, key, value):
+        def delete():
+            del self._store[key]
+
+        if key in self._store:
+            self._store[key][1].cancel()
+            del self._store[key]
+
+        delete_handle = self._loop.call_later(self._seconds, delete)
+        self._store[key] = (value, delete_handle)
+
+    def __contains__(self, key):
+        return key in self._store
+
+
+class ExpiringSet:
+
+    def __init__(self, loop, seconds):
+        self._loop = loop
+        self._store = ExpiringDict(loop, seconds)
+
+    def add(self, item):
+        self._store[item] = True
+
+    def __contains__(self, item):
+        return item in self._store
 
 
 async def async_main(syncer_args):
