@@ -101,6 +101,122 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(body_bytes, b'more-bytes')
 
     @async_test
+    async def test_download_file_after_start(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        start, stop = syncer_for(
+            '/s3-home-folder', prefix='prefix/',
+            download_interval=1)
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        filename_1 = str(uuid.uuid4())
+        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        await asyncio.sleep(2)
+
+        with open(f'/s3-home-folder/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+
+        self.assertEqual(body_bytes, b'some-bytes')
+
+    @async_test
+    async def test_download_file_not_done_during_local_persistance(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        start, stop = syncer_for(
+            '/s3-home-folder', prefix='prefix/',
+            local_modification_persistance=4,
+            download_interval=1,
+        )
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        filename_1 = str(uuid.uuid4())
+
+        with open(f'/s3-home-folder/{filename_1}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        # Wait for the transfer to take place
+        await asyncio.sleep(1)
+
+        # The remote file is overridden
+        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-remote-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        # Ensure that the local file is not yet overridden
+        await asyncio.sleep(2)
+        with open(f'/s3-home-folder/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-bytes')
+
+        # Ensure that the local file is overritten
+        await asyncio.sleep(6)
+
+        with open(f'/s3-home-folder/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-remote-bytes')
+
+    @async_test
+    async def test_download_file_repeated_remote_changes(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        start, stop = syncer_for(
+            '/s3-home-folder', prefix='prefix/',
+            download_interval=1,
+        )
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        filename_1 = str(uuid.uuid4())
+
+        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-remote-bytes-a')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        # Ensure that the local file is not yet overridden
+        await asyncio.sleep(2)
+
+        with open(f'/s3-home-folder/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-remote-bytes-a')
+
+        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-remote-bytes-b')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        # Ensure that the local file is overritten
+        await asyncio.sleep(2)
+
+        with open(f'/s3-home-folder/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-remote-bytes-b')
+
+    @async_test
     async def test_single_small_file_uploaded(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
@@ -1195,11 +1311,14 @@ async def terminate(process):
         pass
 
 
-def syncer_for(path, prefix=''):
+def syncer_for(path, prefix='',
+               local_modification_persistance=120, download_interval=60):
     return Syncer(
         path, 'https://minio:9000/my-bucket/', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
         prefix=prefix,
+        local_modification_persistance=local_modification_persistance,
+        download_interval=download_interval,
     )
 
 
