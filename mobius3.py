@@ -534,10 +534,10 @@ def Syncer(
         watch_and_upload_directory(logger, path, WATCH_MASK)
 
     def handle__file__IN_MOVED_TO(logger, _, cookie, path):
+        bump_content_version(path)
         if cookie in download_cookies:
             logger.debug('Cookie: %s', cookie)
             return
-        bump_content_version(path)
         schedule_upload(logger, path)
 
     def get_content_version(path):
@@ -741,11 +741,6 @@ def Syncer(
                 with open(temporary_path, 'wb') as file:
                     async for chunk in body:
                         file.write(chunk)
-
-                # Event-loop atomic with the replace, queued PUTs abort since
-                # they would be unnecessary, and concurrent PUTs abort since
-                # they would possibly upload a corrupt file
-                bump_content_version(path)
 
                 # May raise a FileNotFoundError if the directory no longer
                 # exists, but handled at higher level
