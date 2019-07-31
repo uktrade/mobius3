@@ -660,8 +660,10 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        await locked_request(logger, b'PUT', path, body=file_body,
-                             headers=((b'content-length', content_length),))
+        headers = await locked_request(logger, b'PUT', path, body=file_body,
+                                       headers=((b'content-length', content_length),))
+        etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
+        etags[path] = etag
 
     async def delete(logger, path, content_version_current, content_version_original):
         logger.info('Deleting %s', path)
@@ -693,6 +695,8 @@ def Syncer(
 
         if code not in [b'200', b'204']:
             raise Exception(code, body_bytes)
+
+        return headers
 
     async def download_manager(logger):
         while True:
