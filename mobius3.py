@@ -247,6 +247,10 @@ def Syncer(
     # download (in which case we don't re-upload), or a real move from
     download_cookies = ExpiringSet(loop, 10)
 
+    # When downloading a file, we note its etag. We don't re-download it later
+    # if the etag matches
+    etags = {}
+
     # A cache of the file tree is maintained. Used for directory renames: we
     # only get notified of renames _after_ they have happened, we need a way
     # to know what objects are on S3 in order to DELETE them
@@ -490,6 +494,11 @@ def Syncer(
         watch_and_upload_directory(logger, path, WATCH_MASK)
 
     def handle__file__IN_DELETE(logger, _, __, path):
+        try:
+            del etags[path]
+        except KeyError:
+            pass
+
         # Correctness does not depend on this bump: it's an optimisation
         # that ensures we abandon any upload of this path ahead of us
         # in the queue
@@ -507,6 +516,10 @@ def Syncer(
         remote_delete_directory(logger, path)
 
     def handle__file__IN_MOVED_FROM(logger, _, __, path):
+        try:
+            del etags[path]
+        except KeyError:
+            pass
         schedule_delete(logger, path)
 
     def handle__dir__IN_MOVED_TO(logger, _, __, path):
@@ -687,7 +700,7 @@ def Syncer(
 
             logger.info('Downloading: %s', full_path)
 
-            code, _, body = await signed_request(logger, b'GET', bucket + prefix + path)
+            code, headers, body = await signed_request(logger, b'GET', bucket + prefix + path)
             if code != b'200':
                 await buffered(body)  # Fetch all bytes and return to pool
                 raise Exception(code)
@@ -716,6 +729,8 @@ def Syncer(
                 # May raise a FileNotFoundError if the directory no longer
                 # exists, but handled at higher level
                 os.replace(temporary_path, full_path)
+
+                etags[full_path] = dict((key.lower(), value) for key, value in headers)['etag']
             finally:
                 os.remove(temporary_path)
 
