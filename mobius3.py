@@ -1,6 +1,9 @@
 import array
 import argparse
 import asyncio
+from collections import (
+    defaultdict,
+)
 import ctypes
 import datetime
 import enum
@@ -233,8 +236,11 @@ def Syncer(
     # that would upate the corresponding item in content_versions
     flushes = WeakValueDictionary()
 
-    # On every change to a local file, we forbid it being changed from S3
-    recently_modified = ExpiringSet(loop, local_modification_persistance)
+    # During a queue of a PUT or DELETE, and for
+    # local_modification_persistance seconds, we do not overwrite local files
+    # with information from S3 for eventual consistency reasons
+    push_queued = defaultdict(int)
+    push_completed = ExpiringSet(loop, local_modification_persistance)
 
     # When moving download files from the hidden directory to their final
     # position, we would like to detect if this is indeed a move from a
@@ -301,6 +307,18 @@ def Syncer(
         for parent in reversed(list(path.parents)):
             directory = directory['children'][parent.name]
         return directory['children'][path.name]
+
+    def queued_push_local_change(path):
+        push_queued[path] += 1
+
+    def completed_push_local_change(path):
+        push_queued[path] -= 1
+        if push_queued[path] == 0:
+            del push_queued[path]
+        push_completed.add(path)
+
+    def is_pull_blocked(path):
+        return path in push_queued or path in push_completed
 
     async def start():
         logger = get_logger_adapter({'mobius3_component': 'start'})
@@ -466,14 +484,12 @@ def Syncer(
         download_cookies.add(cookie)
 
     def handle__file__IN_CLOSE_WRITE(logger, _, __, path):
-        recently_modified.add(path)
         schedule_upload(logger, path)
 
     def handle__dir__IN_CREATE(logger, _, __, path):
         watch_and_upload_directory(logger, path, WATCH_MASK)
 
     def handle__file__IN_DELETE(logger, _, __, path):
-        recently_modified.add(path)
         # Correctness does not depend on this bump: it's an optimisation
         # that ensures we abandon any upload of this path ahead of us
         # in the queue
@@ -491,7 +507,6 @@ def Syncer(
         remote_delete_directory(logger, path)
 
     def handle__file__IN_MOVED_FROM(logger, _, __, path):
-        recently_modified.add(path)
         schedule_delete(logger, path)
 
     def handle__dir__IN_MOVED_TO(logger, _, __, path):
@@ -500,7 +515,6 @@ def Syncer(
     def handle__file__IN_MOVED_TO(logger, _, cookie, path):
         if cookie in download_cookies:
             return
-        recently_modified.add(path)
         bump_content_version(path)
         schedule_upload(logger, path)
 
@@ -518,17 +532,24 @@ def Syncer(
         version_original = version_current.copy()
 
         async def function():
-            await upload(logger, path, version_current, version_original)
+            try:
+                await upload(logger, path, version_current, version_original)
+            finally:
+                completed_push_local_change(path)
 
         ensure_file_in_tree_cache(path)
         upload_job_queue.put_nowait((logger, function))
+        queued_push_local_change(path)
 
     def schedule_delete(logger, path):
         version_current = get_content_version(path)
         version_original = version_current.copy()
 
         async def function():
-            await delete(logger, path, version_current, version_original)
+            try:
+                await delete(logger, path, version_current, version_original)
+            finally:
+                completed_push_local_change(path)
 
         try:
             remove_file_from_tree_cache(path)
@@ -539,6 +560,7 @@ def Syncer(
             # have nothing to upload
             return
         upload_job_queue.put_nowait((logger, function))
+        queued_push_local_change(path)
 
     async def process_jobs(queue):
         while True:
@@ -659,7 +681,12 @@ def Syncer(
         async def download():
             full_path = directory / path
 
+            if is_pull_blocked(full_path):
+                logger.debug('Recently changed locally, not downloading: %s', full_path)
+                return
+
             logger.info('Downloading: %s', full_path)
+
             code, _, body = await signed_request(logger, b'GET', bucket + prefix + path)
             if code != b'200':
                 await buffered(body)  # Fetch all bytes and return to pool
