@@ -596,12 +596,12 @@ def Syncer(
                         isinstance(exception, FileContentChanged) or
                         isinstance(exception.__cause__, FileContentChanged)
                 ):
-                    logger.info('Content changed, aborting: %s', FileContentChanged)
+                    logger.info('Content changed, aborting: %s', exception)
                 if (
                         isinstance(exception, FileNotFoundError) or
                         isinstance(exception.__cause__, FileNotFoundError)
                 ):
-                    logger.info('File not found: %s', FileNotFoundError)
+                    logger.info('File not found: %s', exception)
                 if (
                         not isinstance(exception, FileNotFoundError) and
                         not isinstance(exception.__cause__, FileNotFoundError) and
@@ -707,7 +707,16 @@ def Syncer(
 
     async def list_and_schedule_downloads(logger):
         logger.debug('Listing keys')
-        async for path in list_keys_relative_to_prefix(logger):
+        async for path, etag in list_keys_relative_to_prefix(logger):
+            try:
+                etag_existing = etags[directory / path]
+            except KeyError:
+                pass
+            else:
+                if etag == etag_existing:
+                    logger.debug('Existing etag matches for: %s', path)
+                    continue
+
             logger.info('Scheduling download: %s', path)
             schedule_download(logger, path)
 
@@ -745,11 +754,13 @@ def Syncer(
                 # May raise a FileNotFoundError if the directory no longer
                 # exists, but handled at higher level
                 os.replace(temporary_path, full_path)
-
-                etags[full_path] = dict((key.lower(), value) for key, value in headers)['etag']
             finally:
-                # Will typically raise a FileNotFoundError
-                os.remove(temporary_path)
+                try:
+                    os.remove(temporary_path)
+                except FileNotFoundError:
+                    pass
+            etags[full_path] = dict(
+                (key.lower(), value) for key, value in headers)[b'etag'].decode()
 
         download_job_queue.put_nowait((logger, download))
 
@@ -773,8 +784,8 @@ def Syncer(
                 if element.tag == f'{namespace}Contents':
                     key = first_child_text(element, f'{namespace}Key')
                     key_relative = key[len(prefix):]
-                    keys_relative.append(key_relative)
-
+                    etag = first_child_text(element, f'{namespace}ETag')
+                    keys_relative.append((key_relative, etag))
                 if element.tag == f'{namespace}NextContinuationToken':
                     next_token = element.text
 
