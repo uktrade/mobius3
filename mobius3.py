@@ -682,16 +682,16 @@ def Syncer(
                     async for chunk in body:
                         file.write(chunk)
 
-                # The below two lines are atomic from the event-loop point of
-                # view, so queued and concurrent PUTs would abort, otherwise
-                # the PUT may upload a corrupted file
-                os.replace(temporary_path, full_path)
+                # Event-loop atomic with the replace, queued PUTs abort since
+                # they would be unnecessary, and concurrent PUTs abort since
+                # they would possibly upload a corrupt file
                 bump_content_version(path)
+
+                # May raise a FileNotFoundError if the directory no longer
+                # exists, but handled at higher level
+                os.replace(temporary_path, full_path)
             finally:
-                try:
-                    os.remove(temporary_path)
-                except FileNotFoundError:
-                    pass
+                os.remove(temporary_path)
 
         download_job_queue.put_nowait((logger, download))
 
