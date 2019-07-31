@@ -12,6 +12,7 @@ import termios
 import json
 import logging
 import os
+import shutil
 import signal
 import ssl
 import sys
@@ -384,6 +385,7 @@ def Syncer(
             task.cancel()
         await close_pool()
         await asyncio.sleep(0)
+        shutil.rmtree(directory / download_directory)
         logger.info('Finished stopping')
 
     def stop_inotify():
