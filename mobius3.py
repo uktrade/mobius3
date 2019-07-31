@@ -716,7 +716,7 @@ def Syncer(
             full_path = directory / path
 
             if is_pull_blocked(full_path):
-                logger.debug('Recently changed locally, not downloading: %s', full_path)
+                logger.debug('Recently changed locally, not changing: %s', full_path)
                 return
 
             logger.info('Downloading: %s', full_path)
