@@ -130,6 +130,36 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(body_bytes, b'some-bytes')
 
     @async_test
+    async def test_download_nested_file_after_start(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        start, stop = syncer_for(
+            '/s3-home-folder', prefix='prefix/',
+            download_interval=1)
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        direname_1 = str(uuid.uuid4())
+        filename_1 = str(uuid.uuid4())
+        code, _, body = await put_body(request, f'prefix/{direname_1}/{filename_1}', b'some-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        await asyncio.sleep(2)
+
+        with open(f'/s3-home-folder/{direname_1}/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+
+        self.assertEqual(body_bytes, b'some-bytes')
+
+    @async_test
     async def test_download_file_not_done_during_local_persistance(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
