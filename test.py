@@ -311,6 +311,29 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_body(request, filename), b'some-bytes')
 
     @async_test
+    async def test_single_medium_file_uploaded(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4())
+        contents = str(uuid.uuid4()).encode() * 100000
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(contents)
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), contents)
+
+    @async_test
     async def test_file_upload_preserves_mtime(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
