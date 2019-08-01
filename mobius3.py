@@ -741,6 +741,7 @@ def Syncer(
                 await buffered(body)  # Fetch all bytes and return to pool
                 raise Exception(code)
 
+            headers_dict = dict((key.lower(), value) for key, value in headers)
             parent_directory = directory / (PurePosixPath(path).parent)
             try:
                 os.makedirs(parent_directory)
@@ -751,6 +752,10 @@ def Syncer(
             except Exception:
                 logger.debug('Unable to create directory: %s', parent_directory)
 
+            modified = datetime.datetime.strptime(
+                headers_dict[b'last-modified'].decode(),
+                '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+
             temporary_path = directory / download_directory / uuid.uuid4().hex
             try:
                 with open(temporary_path, 'wb') as file:
@@ -759,14 +764,14 @@ def Syncer(
 
                 # May raise a FileNotFoundError if the directory no longer
                 # exists, but handled at higher level
+                os.utime(temporary_path, (modified, modified))
                 os.replace(temporary_path, full_path)
             finally:
                 try:
                     os.remove(temporary_path)
                 except FileNotFoundError:
                     pass
-            etags[full_path] = dict(
-                (key.lower(), value) for key, value in headers)[b'etag'].decode()
+            etags[full_path] = headers_dict[b'etag'].decode()
 
         download_job_queue.put_nowait((logger, download))
 

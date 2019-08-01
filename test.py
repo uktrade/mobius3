@@ -1,4 +1,7 @@
 import asyncio
+from datetime import (
+    datetime,
+)
 import os
 import shutil
 import ssl
@@ -47,9 +50,16 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(close)
 
         filename_1 = str(uuid.uuid4())
-        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
+        code, headers, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
         self.assertEqual(code, b'200')
         await buffered(body)
+
+        date = dict((key.lower(), value) for key, value in headers)[b'date']
+        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+
+        # Make sure time progresses at least one second, to test that there
+        # is some code setting mtime
+        await asyncio.sleep(1)
 
         start, stop = syncer_for('/s3-home-folder', prefix='prefix/')
 
@@ -59,6 +69,7 @@ class TestIntegration(unittest.TestCase):
             body_bytes = file.read()
 
         self.assertEqual(body_bytes, b'some-bytes')
+        self.assertEqual(date_ts, os.path.getmtime(f'/s3-home-folder/{filename_1}'))
 
         filename_2 = str(uuid.uuid4())
         with open(f'/s3-home-folder/{filename_2}', 'wb') as file:
@@ -118,8 +129,12 @@ class TestIntegration(unittest.TestCase):
         await start()
 
         filename_1 = str(uuid.uuid4())
-        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
+        code, headers, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
         self.assertEqual(code, b'200')
+
+        date = dict((key.lower(), value) for key, value in headers)[b'date']
+        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+
         await buffered(body)
 
         await asyncio.sleep(2)
@@ -128,6 +143,13 @@ class TestIntegration(unittest.TestCase):
             body_bytes = file.read()
 
         self.assertEqual(body_bytes, b'some-bytes')
+        self.assertEqual(date_ts, os.path.getmtime(f'/s3-home-folder/{filename_1}'))
+
+        await asyncio.sleep(2)
+
+        # Ensure the file isn't re-downloaded, or at least if it is, it has
+        # the correct mtime
+        self.assertEqual(date_ts, os.path.getmtime(f'/s3-home-folder/{filename_1}'))
 
     @async_test
     async def test_download_nested_file_after_start(self):
