@@ -79,11 +79,11 @@ If using mobius3 to sync data in a volume accessed by multiple containers, you m
 
 ## Under the hood and limitations
 
-Renaming files or folders map to no atomic operation in S3, and conflicts are dealt with where S3 is always the source-of-truth. This means that with concurrent modifications or deletions to the same file(s) or folder(s) by different clients _data can be lost_ and the directory layout may get corrupted.
-
-If a file has been updated or deleted locally, any concurrent changes from S3 are delayed for 60 seconds as a best-effort to avoid eventual consistency issues where S3 does not yet present a consistent view of latest changes.
+Renaming files or folders map to no atomic operation in S3, and there is no explicit conflict resolution, so conflicts are resolved by S3 itself: the last write wins. This means that with concurrent modifications or deletions to the same file(s) or folder(s) by different clients, _data can be lost_ and the directory layout may get corrupted.
 
 A simple polling mechanism is used to check for changes in S3: hence for large number of files/objects mobius3 may not be performant.
+
+However, there is an exception to the above behaviour: if a file has been updated or deleted by a local process, until 120 seconds after the completion of its upload to S3, it will not be updated by a poll to S3. This is a best-effort attempt to mitigate the possibility of older versions overwriting newer due to the eventual consistency model of S3.
 
 Some of the above behaviours may change in future versions.
 
