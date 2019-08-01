@@ -12,7 +12,7 @@ Continuously and asynchronously sync a local folder to an S3 bucket. This is a P
 
 These properties make mobius3 similar to a Dropbox or Google Drive client. Under the hood, [inotify](http://man7.org/linux/man-pages/man7/inotify.7.html) is used and so only Linux is supported.
 
-> Work in progress. This README is a rough design spec.
+> Early version. Please consider enabling versioning on the S3 bucket.
 
 
 ## Installation
