@@ -334,6 +334,44 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_body(request, filename), contents)
 
     @async_test
+    async def test_larger_numbers_of_files(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop = syncer_for('/s3-home-folder',
+                                 local_modification_persistance=1, download_interval=1)
+        self.add_async_cleanup(stop)
+        await start()
+
+        filenames_contents = sorted([
+            (str(uuid.uuid4()), str(uuid.uuid4()).encode())
+            for _ in range(0, 2500)
+        ])
+
+        for filename, contents in filenames_contents:
+            with open(f'/s3-home-folder/{filename}', 'wb') as file:
+                file.write(contents)
+
+        await asyncio.sleep(2)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+        for filename, contents in filenames_contents:
+            self.assertEqual(await object_body(request, filename), contents)
+
+        last_filename = filenames_contents[-1][0]
+        _, _, body = await put_body(request, last_filename, b'some-bytes')
+        await buffered(body)
+
+        await asyncio.sleep(2)
+
+        with open(f'/s3-home-folder/{last_filename}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-bytes')
+
+    @async_test
     async def test_file_upload_preserves_mtime(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
