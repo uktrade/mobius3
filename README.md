@@ -85,6 +85,8 @@ A simple polling mechanism is used to check for changes in S3: hence for large n
 
 However, there is an exception to the above behaviour: if a file has been updated or deleted by a local process, until 120 seconds after the completion of its upload to S3, it will not be updated by a poll to S3. This is a best-effort attempt to mitigate the possibility of older versions overwriting newer due to the eventual consistency model of S3.
 
+Uploads to S3 are initiated when a file is closed.
+
 Some of the above behaviours may change in future versions.
 
 
