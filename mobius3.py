@@ -189,6 +189,7 @@ def Syncer(
         get_pool=Pool,
         flush_file_root='.__mobius3_flush__',
         flush_file_timeout=5,
+        directory_watch_timeout=5,
         download_directory='.mobius3',
         get_logger_adapter=get_logger_adapter_default,
         get_http_logger_adapter=get_http_logger_adapter_default,
@@ -209,6 +210,10 @@ def Syncer(
     # path to its watch descriptor path: these are used to find the full
     # path of any notified-on files
     wds_to_path = {}
+
+    # To migitate (but not eliminate) the chance that nested files are
+    # immediately re-uploaded
+    directory_watch_events = WeakValueDictionary()
 
     # The asyncio task pool that performs the uploads
     upload_tasks = []
@@ -342,9 +347,9 @@ def Syncer(
             asyncio.create_task(process_jobs(download_job_queue))
             for i in range(0, concurrent_downloads)
         ]
+        start_inotify(logger)
         await list_and_schedule_downloads(logger)
         await download_job_queue.join()
-        start_inotify(logger)
         download_manager_task = asyncio.create_task(
             download_manager(get_logger_adapter({'mobius3_component': 'download'}))
         )
@@ -401,6 +406,9 @@ def Syncer(
         # After a directory rename, we will be changing the path of an
         # existing entry, but that's fine
         wds_to_path[wd] = path
+
+        # Notify any waiting watchers
+        directory_watch_events.setdefault(path, default=asyncio.Event()).set()
 
     def watch_and_upload_directory(logger, path, mask):
         watch_directory(path, mask)
@@ -627,6 +635,15 @@ def Syncer(
         with timeout(loop, flush_file_timeout):
             await event.wait()
 
+    async def wait_for_directory_watched(path):
+        # Inneficient search
+        if path.parent in wds_to_path.values():
+            return
+
+        event = directory_watch_events.setdefault(path.parent, default=asyncio.Event())
+        with timeout(loop, directory_watch_timeout):
+            await event.wait()
+
     async def upload(logger, path, content_version_current, content_version_original):
         logger.info('Uploading %s', path)
 
@@ -774,6 +791,20 @@ def Syncer(
                 # May raise a FileNotFoundError if the directory no longer
                 # exists, but handled at higher level
                 os.utime(temporary_path, (modified, modified))
+
+                # If we don't wait for the directory watched, then if
+                # - a directory has just been created above
+                # - a download that doesn't yield (enough) for the create
+                #   directory eveny to have been processed
+                # once the IN_CREATE event for the directory is processed it
+                # would discover the file and re-upload
+                await wait_for_directory_watched(full_path)
+
+                # Ensure that once we move the file into place, subsequent
+                # renames will
+                ensure_file_in_tree_cache(full_path)
+
+                logger.debug('Moving to %s', full_path)
                 os.replace(temporary_path, full_path)
             finally:
                 try:

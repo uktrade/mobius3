@@ -170,16 +170,36 @@ class TestIntegration(unittest.TestCase):
 
         dirname_1 = str(uuid.uuid4())
         filename_1 = str(uuid.uuid4())
-        code, _, body = await put_body(request, f'prefix/{dirname_1}/{filename_1}', b'some-bytes')
+        code, headers, body = await put_body(
+            request, f'prefix/{dirname_1}/{filename_1}',
+            b'some-bytes')
         self.assertEqual(code, b'200')
         await buffered(body)
+        date = dict((key.lower(), value) for key, value in headers)[b'date']
 
         await asyncio.sleep(2)
+
+        # Ensure the modified date stays the same to check that a second upload
+        # has not occured
+        code, headers, body = await object_triple(request, f'prefix/{dirname_1}/{filename_1}')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+        modified = dict((key.lower(), value) for key, value in headers)[b'last-modified']
+        self.assertEqual(modified, date)
 
         with open(f'/s3-home-folder/{dirname_1}/{filename_1}', 'rb') as file:
             body_bytes = file.read()
 
         self.assertEqual(body_bytes, b'some-bytes')
+
+        dirname_2 = str(uuid.uuid4())
+        os.rename(f'/s3-home-folder/{dirname_1}', f'/s3-home-folder/{dirname_2}')
+
+        await asyncio.sleep(2)
+
+        self.assertEqual(await object_code(request, f'prefix/{dirname_1}/{filename_1}'), b'404')
+        self.assertEqual(await object_body(
+            request, f'prefix/{dirname_2}/{filename_1}'), b'some-bytes')
 
     @async_test
     async def test_download_file_not_done_during_local_persistance(self):
