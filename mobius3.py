@@ -655,6 +655,7 @@ def Syncer(
                     yield chunk
 
         content_length = str(os.stat(path).st_size).encode()
+        mtime = str(os.path.getmtime(path)).encode()
 
         # Ensure we only progress if the content length hasn't changed since
         # we have queued the upload
@@ -662,8 +663,13 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        headers = await locked_request(logger, b'PUT', path, body=file_body,
-                                       headers=((b'content-length', content_length),))
+        headers = await locked_request(
+            logger, b'PUT', path, body=file_body,
+            headers=(
+                (b'content-length', content_length),
+                (b'x-amz-meta-mtime', mtime),
+            ),
+        )
         etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
         etags[path] = etag
 
@@ -752,9 +758,12 @@ def Syncer(
             except Exception:
                 logger.debug('Unable to create directory: %s', parent_directory)
 
-            modified = datetime.datetime.strptime(
-                headers_dict[b'last-modified'].decode(),
-                '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+            try:
+                modified = float(headers_dict[b'x-amz-meta-mtime'])
+            except (KeyError, ValueError):
+                modified = datetime.datetime.strptime(
+                    headers_dict[b'last-modified'].decode(),
+                    '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
             temporary_path = directory / download_directory / uuid.uuid4().hex
             try:
