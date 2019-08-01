@@ -168,15 +168,15 @@ class TestIntegration(unittest.TestCase):
 
         await start()
 
-        direname_1 = str(uuid.uuid4())
+        dirname_1 = str(uuid.uuid4())
         filename_1 = str(uuid.uuid4())
-        code, _, body = await put_body(request, f'prefix/{direname_1}/{filename_1}', b'some-bytes')
+        code, _, body = await put_body(request, f'prefix/{dirname_1}/{filename_1}', b'some-bytes')
         self.assertEqual(code, b'200')
         await buffered(body)
 
         await asyncio.sleep(2)
 
-        with open(f'/s3-home-folder/{direname_1}/{filename_1}', 'rb') as file:
+        with open(f'/s3-home-folder/{dirname_1}/{filename_1}', 'rb') as file:
             body_bytes = file.read()
 
         self.assertEqual(body_bytes, b'some-bytes')
@@ -289,6 +289,49 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(close)
 
         self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+    @async_test
+    async def test_file_upload_preserves_mtime(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop_a = syncer_for('/s3-home-folder')
+        stopped = False
+
+        async def stop_once():
+            nonlocal stopped
+            if stopped:
+                return
+            stopped = True
+            await stop_a()
+        self.add_async_cleanup(stop_once)
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        mtime_1 = os.path.getmtime(f'/s3-home-folder/{filename}')
+
+        await stop_once()
+        await delete_dir()
+
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        await asyncio.sleep(1)
+
+        start, stop_b = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop_b)
+        await start()
+
+        await asyncio.sleep(1)
+
+        mtime_2 = os.path.getmtime(f'/s3-home-folder/{filename}')
+
+        self.assertEqual(mtime_1, mtime_2)
 
     @async_test
     async def test_single_small_file_uploaded_emoji(self):
