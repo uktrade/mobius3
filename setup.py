@@ -25,7 +25,7 @@ setuptools.setup(
     ],
     install_requires=[
         'fifolock>=0.0.20',
-        'lowhaio>=0.0.84',
+        'lowhaio>=0.0.85',
         'lowhaio-aws-sigv4-unsigned-payload>=0.0.4',
         'lowhaio-retry>=0.0.5'
     ],
