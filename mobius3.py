@@ -195,7 +195,7 @@ def Syncer(
         get_http_logger_adapter=get_http_logger_adapter_default,
         get_resolver_logger_adapter=get_resolver_logger_adapter_default,
         local_modification_persistance=120,
-        download_interval=60,
+        download_interval=10,
 ):
 
     loop = asyncio.get_running_loop()
