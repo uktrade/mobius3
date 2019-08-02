@@ -37,6 +37,8 @@ from fifolock import (
     FifoLock,
 )
 from lowhaio import (
+    HttpConnectionError,
+    HttpDataError,
     HttpLoggerAdapter,
     Pool,
     buffered,
@@ -45,6 +47,9 @@ from lowhaio import (
 )
 from lowhaio_aws_sigv4_unsigned_payload import (
     aws_sigv4_headers,
+)
+from lowhaio_retry import (
+    retry,
 )
 
 
@@ -296,8 +301,12 @@ def Syncer(
 
         return _signed
 
+    retriable_request = retry(request, exception_intervals=(
+        (HttpConnectionError, (0, 0, 0)),
+        (HttpDataError, (0, 1, 2, 4, 8, 16)),
+    ))
     signed_request = signed(
-        request, credentials=get_credentials, service='s3', region=region,
+        retriable_request, credentials=get_credentials, service='s3', region=region,
     )
 
     def ensure_file_in_tree_cache(path):

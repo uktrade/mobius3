@@ -27,6 +27,7 @@ setuptools.setup(
         'fifolock>=0.0.20',
         'lowhaio>=0.0.84',
         'lowhaio-aws-sigv4-unsigned-payload>=0.0.4',
+        'lowhaio-retry>=0.0.5'
     ],
     test_suite='test',
     entry_points={
