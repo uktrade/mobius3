@@ -176,6 +176,7 @@ def get_credentials_from_ecs_endpoint():
             creds = json.loads(await buffered(body))
             aws_access_key_id = creds['AccessKeyId']
             aws_secret_access_key = creds['SecretAccessKey']
+            expiration = datetime.datetime.strptime(creds['Expiration'], '%Y-%m-%dT%H:%M:%SZ')
             pre_auth_headers = (
                 (b'x-amz-security-token', creds['Token'].encode(),),
             )
