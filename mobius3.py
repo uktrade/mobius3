@@ -794,8 +794,11 @@ def Syncer(
                 if code != b'404':
                     continue
 
-                # Check again if we have made local modifications since the above request
-                # can take time
+                # Check again if we have made modifications since the above request can take time
+                try:
+                    await flush_events(logger, full_path)
+                except FileNotFoundError:
+                    continue
                 if is_pull_blocked(full_path):
                     continue
 
