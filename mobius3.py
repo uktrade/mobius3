@@ -255,6 +255,9 @@ def Syncer(
     # download (in which case we don't re-upload), or a real move from
     download_cookies = ExpiringSet(loop, 10)
 
+    # When we delete a file locally, do not attempt to delete it remotely
+    ignore_next_delete = {}
+
     # When downloading a file, we note its etag. We don't re-download it later
     # if the etag matches
     etags = {}
@@ -330,7 +333,20 @@ def Syncer(
         push_completed.add(path)
 
     def is_pull_blocked(path):
-        return path in push_queued or path in push_completed
+        # For extremely recent modifications we may not have yielded the event
+        # loop to add files to the queue. We do our best and check the mtime
+        # to prevent overriding with older remote data. However, after we
+        # check a file could still be modified locally, and we have no way to
+        # detect this
+
+        def created_recently():
+            now = datetime.datetime.now().timestamp()
+            try:
+                return now - os.path.getmtime(path) < local_modification_persistance
+            except FileNotFoundError:
+                return False
+
+        return path in push_queued or path in push_completed or created_recently()
 
     async def start():
         logger = get_logger_adapter({'mobius3_component': 'start'})
@@ -359,6 +375,8 @@ def Syncer(
         nonlocal wds_to_path
         nonlocal tree_cache_root
         nonlocal fd
+        nonlocal ignore_next_delete
+        ignore_next_delete = {}
         wds_to_path = {}
         tree_cache_root = {
             'type': 'directory',
@@ -516,6 +534,13 @@ def Syncer(
             del etags[path]
         except KeyError:
             pass
+
+        try:
+            del ignore_next_delete[path]
+        except KeyError:
+            pass
+        else:
+            return
 
         # Correctness does not depend on this bump: it's an optimisation
         # that ensures we abandon any upload of this path ahead of us
@@ -736,7 +761,12 @@ def Syncer(
 
     async def list_and_schedule_downloads(logger):
         logger.debug('Listing keys')
-        async for path, etag in list_keys_relative_to_prefix(logger):
+
+        path_etags = [
+            (path, etag) async for path, etag in list_keys_relative_to_prefix(logger)
+        ]
+
+        for path, etag in path_etags:
             try:
                 etag_existing = etags[directory / path]
             except KeyError:
@@ -748,6 +778,39 @@ def Syncer(
 
             logger.info('Scheduling download: %s', path)
             schedule_download(logger, path)
+
+        full_paths = set(directory / path for path, _ in path_etags)
+        for root, _, files in os.walk(directory):
+            for file in files:
+                full_path = PurePosixPath(root) / file
+                if full_path in full_paths or is_pull_blocked(full_path):
+                    continue
+
+                # Since walking the filesystem can take time we might have a new file that we have
+                # recently uploaded that was not present when we request the original file list.
+                path = full_path.relative_to(directory)
+                code, _, body = await signed_request(logger, b'HEAD', bucket + prefix + str(path))
+                await buffered(body)
+                if code != b'404':
+                    continue
+
+                # Check again if we have made local modifications since the above request
+                # can take time
+                if is_pull_blocked(full_path):
+                    continue
+
+                try:
+                    logger.info('Deleting locally %s', full_path)
+                    os.remove(full_path)
+                except FileNotFoundError:
+                    pass
+                else:
+                    # The remove will queue a remote DELETE. However, the file already doesn't
+                    # appear to exist in S3, so a) there is no need and b) may actually delete
+                    # data either added by another client, or even from this one in the case
+                    # of an extremely long eventual consistency issue where a PUT of a object
+                    # that did not previously exist is still appearing
+                    ignore_next_delete[full_path] = True
 
     def schedule_download(logger, path):
         async def download():
@@ -800,12 +863,22 @@ def Syncer(
                 # would discover the file and re-upload
                 await wait_for_directory_watched(full_path)
 
-                # Ensure that once we move the file into place, subsequent
-                # renames will
-                ensure_file_in_tree_cache(full_path)
+                try:
+                    await flush_events(logger, full_path)
+                except FileNotFoundError:
+                    # The folder doesn't exist, so moving into place will fail
+                    return
+
+                if is_pull_blocked(full_path):
+                    logger.debug('Recently changed locally, not changing: %s', full_path)
+                    return
 
                 logger.debug('Moving to %s', full_path)
                 os.replace(temporary_path, full_path)
+
+                # Ensure that once we move the file into place, subsequent
+                # renames will attempt to move the file
+                ensure_file_in_tree_cache(full_path)
             finally:
                 try:
                     os.remove(temporary_path)

@@ -259,6 +259,7 @@ class TestIntegration(unittest.TestCase):
         start, stop = syncer_for(
             '/s3-home-folder', prefix='prefix/',
             download_interval=1,
+            local_modification_persistance=1
         )
         self.add_async_cleanup(stop)
 
@@ -270,7 +271,7 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(code, b'200')
         await buffered(body)
 
-        # Ensure that the local file is not yet overridden
+        # Ensure that the local file isoverridden
         await asyncio.sleep(2)
 
         with open(f'/s3-home-folder/{filename_1}', 'rb') as file:
@@ -341,20 +342,22 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder',
-                                 local_modification_persistance=1, download_interval=1)
+                                 local_modification_persistance=2, download_interval=1)
         self.add_async_cleanup(stop)
         await start()
 
         filenames_contents = sorted([
             (str(uuid.uuid4()), str(uuid.uuid4()).encode())
-            for _ in range(0, 2500)
+            for i in range(0, 2500)
         ])
 
+        loop = asyncio.get_running_loop()
+        start = loop.time()
         for filename, contents in filenames_contents:
             with open(f'/s3-home-folder/{filename}', 'wb') as file:
                 file.write(contents)
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(4)
 
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
@@ -365,11 +368,52 @@ class TestIntegration(unittest.TestCase):
         _, _, body = await put_body(request, last_filename, b'some-bytes')
         await buffered(body)
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(7)
 
         with open(f'/s3-home-folder/{last_filename}', 'rb') as file:
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'some-bytes')
+
+    @async_test
+    async def test_files_deleted_remotely(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop = syncer_for('/s3-home-folder',
+                                 local_modification_persistance=1, download_interval=1)
+        self.add_async_cleanup(stop)
+        await start()
+
+        filenames_contents = sorted([
+            (str(uuid.uuid4()), str(uuid.uuid4()).encode())
+            for _ in range(0, 5)
+        ])
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        for filename, contents in filenames_contents:
+            with open(f'/s3-home-folder/{filename}', 'wb') as file:
+                file.write(contents)
+
+        await asyncio.sleep(2)
+
+        last_filename = filenames_contents[-1][0]
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+        _, _, body = await delete_object(request, f'{last_filename}')
+        await buffered(body)
+
+        await asyncio.sleep(2)
+
+        for filename, content in filenames_contents[:-1]:
+            with open(f'/s3-home-folder/{filename}', 'rb') as file:
+                body_bytes = file.read()
+            self.assertEqual(body_bytes, content)
+
+        self.assertFalse(os.path.exists(f'/s3-home-folder/{last_filename}'))
 
     @async_test
     async def test_file_upload_preserves_mtime(self):
@@ -1526,6 +1570,14 @@ async def object_triple(request, key):
         service='s3', region='us-east-1',
     )
     return await signed_request(b'GET', f'https://minio:9000/my-bucket/{key}')
+
+
+async def delete_object(request, key):
+    signed_request = signed(
+        request, credentials=get_credentials_from_environment,
+        service='s3', region='us-east-1',
+    )
+    return await signed_request(b'DELETE', f'https://minio:9000/my-bucket/{key}')
 
 
 async def put_body(request, key, body):
