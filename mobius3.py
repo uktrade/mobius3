@@ -339,14 +339,14 @@ def Syncer(
         # check a file could still be modified locally, and we have no way to
         # detect this
 
-        def created_recently():
+        def modified_recently():
             now = datetime.datetime.now().timestamp()
             try:
                 return now - os.path.getmtime(path) < local_modification_persistance
             except FileNotFoundError:
                 return False
 
-        return path in push_queued or path in push_completed or created_recently()
+        return path in push_queued or path in push_completed or modified_recently()
 
     async def start():
         logger = get_logger_adapter({'mobius3_component': 'start'})
