@@ -1034,6 +1034,12 @@ def main():
         help='Prefix of keys in the bucket, often with a trailing slash\n'
              'e.g. my-folder/')
     parser.add_argument(
+        '--exclude-remote',
+        metavar='exclude-remote',
+        default='^$',
+        nargs='?',
+        help='Regex of keys to not be downloaded')
+    parser.add_argument(
         '--disable-ssl-verification',
         metavar='',
         nargs='?', const=True, default=False)
