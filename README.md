@@ -113,7 +113,7 @@ An alternative to the above would be use a filesystem locking mechanism. However
 
 ### Keeping HTTP requests for the same file ordered
 
-Multiple concurrent requests to S3 are also supported. However, this presents the possibility of additional race conditions: requests started in a given order may not be received by S3 in that order. This means that newer versions of files can be overwritten by older. Even the guarantee from S3 that "latest time stamp wins" for concurrent PUTs to the same key does not offer sufficient protection from this, since such requests can be made with the same timestamp.
+Multiple concurrent requests to S3 are supported. However, this presents the possibility of additional race conditions: requests started in a given order may not be received by S3 in that order. This means that newer versions of files can be overwritten by older. The guarantee from S3 that "latest time stamp wins" for concurrent PUTs to the same key does not offer protection from this.
 
 Therefore to prevent this, a FIFO mutex is used around each file during PUT and DELETE of any key.
 
