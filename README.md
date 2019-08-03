@@ -79,15 +79,19 @@ If using mobius3 to sync data in a volume accessed by multiple containers, you m
 
 ## Under the hood and limitations
 
-Renaming files or folders map to no atomic operation in S3, and there is no explicit conflict resolution, so conflicts are resolved by S3 itself: the last write wins. This means that with concurrent modifications or deletions to the same file(s) or folder(s) by different clients, _data can be lost_ and the directory layout may get corrupted.
-
-A simple polling mechanism is used to check for changes in S3: hence for large number of files/objects mobius3 may not be performant.
-
-However, there is an exception to the above behaviour: if a file has been updated or deleted by a local process, until 120 seconds after the completion of its upload to S3, it will not be updated by a poll to S3. This is a best-effort attempt to mitigate the possibility of older versions overwriting newer due to the eventual consistency model of S3.
+### Uploads to S3
 
 Uploads to S3 are initiated when a file is closed.
 
-Some of the above behaviours may change in future versions.
+
+### Downloads from S3
+
+A simple polling mechanism is used to check for changes in S3: hence for large number of files/objects mobius3 may not be performant. If a file has been updated or deleted by a local process, until 120 seconds after the completion of its upload to S3, it will not be updated by a poll to S3. This is a best-effort attempt to mitigate the possibility of older versions overwriting newer due to the eventual consistency model of S3.
+
+
+### Concurrency: Renaming files and folders
+
+Renaming files or folders map to no atomic operation in S3, and there is no explicit conflict resolution, so conflicts are resolved by S3 itself: the last write wins. This means that with concurrent modifications or deletions to the same file(s) or folder(s) by different clients, _data can be lost_ and the directory layout may get corrupted.
 
 
 ### Concurrency: responding to concurrent file modifications
@@ -117,6 +121,10 @@ Therefore to prevent this, a FIFO mutex is used around each file during PUT and 
 ### Objects with the same key as a directory
 
 S3 is a key, value store and not a filesystem: there is no perfect mapping of all possible keys to a directory structure, e.g. it can store objects with keys `a` and `a/b`, but a filesystem can't have files with paths `a` and `a/b`. In such a case mobius3 will usually treat `a` as a file and ignore `a/b`. However, if `a/b` is created while mobius3 is running and synced locally, then `a` will not be created locally.
+
+----
+
+Some of the above behaviours may change in future versions.
 
 
 ## Running tests
