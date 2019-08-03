@@ -203,13 +203,14 @@ def Syncer(
         get_resolver_logger_adapter=get_resolver_logger_adapter_default,
         local_modification_persistance=120,
         download_interval=10,
-        exclude_remote=re.compile(r'^$'),
+        exclude_remote=r'^$',
 ):
 
     loop = asyncio.get_running_loop()
     logger = get_logger_adapter({})
 
     directory = PurePosixPath(directory)
+    exclude_remote = re.compile(exclude_remote)
 
     # The file descriptor returned from inotify_init
     fd = None
@@ -363,6 +364,7 @@ def Syncer(
     async def start():
         logger = get_logger_adapter({'mobius3_component': 'start'})
         logger.info('Starting')
+        logger.info('Excluding: %s', exclude_remote)
         nonlocal upload_tasks
         nonlocal download_tasks
         nonlocal download_manager_task
@@ -924,6 +926,7 @@ def Syncer(
                     key = first_child_text(element, f'{namespace}Key')
                     key_relative = key[len(prefix):]
                     if exclude_remote.match(key_relative):
+                        logger.info('Excluding: %s', key_relative)
                         continue
                     etag = first_child_text(element, f'{namespace}ETag')
                     keys_relative.append((key_relative, etag))
@@ -1086,6 +1089,7 @@ def main():
         'bucket': parsed_args.bucket,
         'prefix': parsed_args.prefix,
         'region': parsed_args.region,
+        'exclude_remote': parsed_args.exclude_remote,
         'get_pool': lambda: Pool(**pool_args),
         'get_credentials':
             get_credentials_from_environment if creds_source == 'envrionment-variables' else
