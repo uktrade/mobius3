@@ -3,6 +3,7 @@ from datetime import (
     datetime,
 )
 import os
+import re
 import shutil
 import ssl
 import sys
@@ -107,6 +108,39 @@ class TestIntegration(unittest.TestCase):
         with open(f'/s3-home-folder/{directory}/{filename_1}', 'rb') as file:
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'some-bytes')
+        with open(f'/s3-home-folder/{directory}/{filename_2}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'more-bytes')
+
+    @async_test
+    async def test_not_ignored_files_at_start(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        filename_1 = str(uuid.uuid4())
+        filename_2 = str(uuid.uuid4())
+        directory = str(uuid.uuid4())
+        code, _, body = await put_body(request, f'prefix/{filename_1}/.checkpoints/check_1',
+                                       b'some-inner-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+        code, _, body = await put_body(request, f'prefix/{directory}/{filename_2}', b'more-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        start, stop = syncer_for('/s3-home-folder', prefix='prefix/',
+                                 exclude_remote=re.compile(r'.*\.checkpoints/.*'))
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        self.assertFalse(os.path.exists(f'/s3-home-folder/{filename_1}/.checkpoints/check_1'))
+
         with open(f'/s3-home-folder/{directory}/{filename_2}', 'rb') as file:
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'more-bytes')
@@ -1534,13 +1568,15 @@ async def terminate(process):
 
 
 def syncer_for(path, prefix='',
-               local_modification_persistance=120, download_interval=60):
+               local_modification_persistance=120, download_interval=60,
+               exclude_remote=re.compile(r'^$')):
     return Syncer(
         path, 'https://minio:9000/my-bucket/', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
         prefix=prefix,
         local_modification_persistance=local_modification_persistance,
         download_interval=download_interval,
+        exclude_remote=exclude_remote,
     )
 
 

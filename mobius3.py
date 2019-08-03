@@ -12,6 +12,7 @@ import termios
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import ssl
@@ -202,6 +203,7 @@ def Syncer(
         get_resolver_logger_adapter=get_resolver_logger_adapter_default,
         local_modification_persistance=120,
         download_interval=10,
+        exclude_remote=re.compile(r'^$'),
 ):
 
     loop = asyncio.get_running_loop()
@@ -921,6 +923,8 @@ def Syncer(
                 if element.tag == f'{namespace}Contents':
                     key = first_child_text(element, f'{namespace}Key')
                     key_relative = key[len(prefix):]
+                    if exclude_remote.match(key_relative):
+                        continue
                     etag = first_child_text(element, f'{namespace}ETag')
                     keys_relative.append((key_relative, etag))
                 if element.tag == f'{namespace}NextContinuationToken':
