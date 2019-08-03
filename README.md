@@ -89,12 +89,12 @@ Uploads to S3 are initiated when a file is closed.
 A simple polling mechanism is used to check for changes in S3: hence for large number of files/objects mobius3 may not be performant. If a file has been updated or deleted by a local process, until 120 seconds after the completion of its upload to S3, it will not be updated by a poll to S3. This is a best-effort attempt to mitigate the possibility of older versions overwriting newer due to the eventual consistency model of S3.
 
 
-### Concurrency: Renaming files and folders
+### Renaming files and folders
 
 Renaming files or folders map to no atomic operation in S3, and there is no explicit conflict resolution, so conflicts are resolved by S3 itself: the last write wins. This means that with concurrent modifications or deletions to the same file(s) or folder(s) by different clients, _data can be lost_ and the directory layout may get corrupted.
 
 
-### Concurrency: responding to concurrent file modifications
+### Responding to concurrent file modifications
 
 Mid-upload, a file can could modified by a local process, so in this case a corrupt file could be uploaded to S3. To mitigate this mobius3 uses the following algorithm for each upload.
 
@@ -111,7 +111,7 @@ An alternative to the above would be use a filesystem locking mechanism. However
 - we don't want to prevent other processes from progressing due to locking the file on upload: this would partially remove the benefits of the asynchronous nature of the syncing.
 
 
-### Concurrency: keeping HTTP requests for the same file ordered
+### Keeping HTTP requests for the same file ordered
 
 Multiple concurrent requests to S3 are also supported. However, this presents the possibility of additional race conditions: requests started in a given order may not be received by S3 in that order. This means that newer versions of files can be overwritten by older. Even the guarantee from S3 that "latest time stamp wins" for concurrent PUTs to the same key does not offer sufficient protection from this, since such requests can be made with the same timestamp.
 
