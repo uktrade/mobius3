@@ -863,10 +863,15 @@ def Syncer(
                     '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
             temporary_path = directory / download_directory / uuid.uuid4().hex
+            is_directory = path[-1] == '/'
             try:
-                with open(temporary_path, 'wb') as file:
-                    async for chunk in body:
-                        file.write(chunk)
+                if is_directory:
+                    os.mkdir(temporary_path)
+                    await buffered(body)
+                else:
+                    with open(temporary_path, 'wb') as file:
+                        async for chunk in body:
+                            file.write(chunk)
 
                 # May raise a FileNotFoundError if the directory no longer
                 # exists, but handled at higher level
@@ -895,7 +900,8 @@ def Syncer(
 
                 # Ensure that once we move the file into place, subsequent
                 # renames will attempt to move the file
-                ensure_file_in_tree_cache(full_path)
+                if not is_directory:
+                    ensure_file_in_tree_cache(full_path)
             finally:
                 try:
                     os.remove(temporary_path)

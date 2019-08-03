@@ -13,6 +13,9 @@ import uuid
 from aiodnsresolver import (
     Resolver,
 )
+from aiohttp import (
+    web,
+)
 from lowhaio import (
     Pool,
     buffered,
@@ -234,6 +237,61 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_code(request, f'prefix/{dirname_1}/{filename_1}'), b'404')
         self.assertEqual(await object_body(
             request, f'prefix/{dirname_2}/{filename_1}'), b'some-bytes')
+
+    @async_test
+    async def test_download_directory_after_start(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        dirname_1 = str(uuid.uuid4())
+        dirname_2 = str(uuid.uuid4())
+        dirname_3 = str(uuid.uuid4())
+
+        start, stop = Syncer(
+            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+        )
+        self.add_async_cleanup(stop)
+
+        # minio does not support keys with trailing slashes, so we fire up our
+        # own mock S3
+        async def handle_list(_):
+            body = f'''<?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                <Contents>
+                    <Key>{dirname_1}/</Key>
+                    <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                </Contents>
+                <Contents>
+                    <Key>{dirname_2}/{dirname_3}/</Key>
+                    <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                </Contents>
+            </ListBucketResult>'''.encode()
+            return web.Response(status=200, body=body)
+
+        async def handle_dir(_):
+            return web.Response(status=200, headers={
+                'last-modified': 'Fri, 10 May 2019 06:53:17 GMT',
+                'etag': '"fba9dede5f27731c9771645a39863328"',
+            }, body=b'')
+
+        app = web.Application()
+        app.add_routes([
+            web.get(f'/my-bucket/', handle_list),
+            web.get(f'/my-bucket/{dirname_1}/', handle_dir),
+            web.get(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir),
+        ])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self.add_async_cleanup(runner.cleanup)
+        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        await site.start()
+
+        await start()
+
+        self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_1}'))
+        self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_2}/{dirname_3}'))
+        self.assertEqual(os.path.getmtime(f'/s3-home-folder/{dirname_2}/{dirname_3}'),
+                         1557471197.0)
 
     @async_test
     async def test_download_file_not_done_during_local_persistance(self):

@@ -30,6 +30,9 @@ setuptools.setup(
         'lowhaio-retry>=0.0.5'
     ],
     test_suite='test',
+    tests_require=[
+        'aiohttp~=3.5.4',
+    ],
     entry_points={
         'console_scripts': [
             'mobius3=mobius3:main'
