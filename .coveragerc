@@ -4,3 +4,4 @@ branch = True
 omit =
 	.eggs/*
 	/usr/bin/mobius3
+	/tmp/*
