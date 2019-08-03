@@ -120,7 +120,7 @@ Therefore to prevent this, a FIFO mutex is used around each file during PUT and 
 
 ### Objects with the same key as a directory
 
-S3 is a key, value store and not a filesystem: there is no perfect mapping of all possible keys to a directory structure, e.g. it can store objects with keys `a` and `a/b`, but a filesystem can't have files with paths `a` and `a/b`. In such a case mobius3 will usually treat `a` as a file and ignore `a/b`. However, if `a/b` is created while mobius3 is running and synced locally, then `a` will not be created locally.
+S3 is a key, value store and not a filesystem: there is no perfect mapping of all possible keys to a directory structure, e.g. it can store objects with keys `a` and `a/b`, but a filesystem can't have files with paths `/a` and `/a/b`. In such a case mobius3 will usually treat `a` as a file and ignore `a/b`. However, if `a/b` is created while mobius3 is running and synced locally, then `a` will not be created locally.
 
 ----
 
