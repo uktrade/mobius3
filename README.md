@@ -63,14 +63,14 @@ In the cases above AWS credentials are taken from the `AWS_ACCESS_KEY_ID` and `A
 
 ```json
 {
-	"command": [
-		"mobius3",
-		"/home/mobius3/data",
-		"https://remote-bucket.s3-eu-west-2.amazonaws.com/",
-		"eu-west-2",
-		"--prefix", "my-prefix/"
-		"--credentials-source", "ecs-container-endpoint"
-	]
+    "command": [
+        "mobius3",
+        "/home/mobius3/data",
+        "https://remote-bucket.s3-eu-west-2.amazonaws.com/",
+        "eu-west-2",
+        "--prefix", "my-prefix/"
+        "--credentials-source", "ecs-container-endpoint"
+    ]
 }
 ```
 
