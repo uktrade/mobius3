@@ -122,7 +122,12 @@ class TestIntegration(unittest.TestCase):
         delete_bucket_dir = create_directory('/test-data/my-bucket')
         self.add_async_cleanup(delete_bucket_dir)
 
-        start, stop = syncer_for('/s3-home-folder', exclude_local=r'.*to-exclude.*')
+        start, stop = syncer_for(
+            '/s3-home-folder',
+            exclude_local=r'.*to-exclude.*',
+            local_modification_persistance=1,
+            download_interval=1,
+        )
         self.add_async_cleanup(stop)
         await start()
 
@@ -138,7 +143,7 @@ class TestIntegration(unittest.TestCase):
         with open(f'/s3-home-folder/{dirname_1}/{filename_3}', 'wb') as file:
             file.write(b'some-bytes-b')
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
@@ -149,6 +154,8 @@ class TestIntegration(unittest.TestCase):
 
         # Minio seems to return a 200 for all folders, but this _should_ assertEqual for S3 proper
         # self.assertEqual(await object_code(request, f'{dirname_1}/'), b'404')
+
+        self.assertTrue(os.path.exists(f'/s3-home-folder/{filename_2}'))
 
     @async_test
     async def test_exclude_remote_at_start(self):

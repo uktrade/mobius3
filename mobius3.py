@@ -899,7 +899,12 @@ def Syncer(
         for root, dirs, files in os.walk(directory, topdown=False):
             for file in files:
                 full_path = PurePosixPath(root) / file
-                if full_path in full_paths or is_pull_blocked(full_path):
+
+                if (
+                        exclude_local.match(str(full_path)) or
+                        full_path in full_paths or
+                        is_pull_blocked(full_path)
+                ):
                     continue
 
                 # Since walking the filesystem can take time we might have a new file that we have
@@ -934,6 +939,7 @@ def Syncer(
             for dir_ in dirs:
                 full_path = PurePosixPath(root) / dir_
                 if (
+                        exclude_local.match(str(full_path)) or
                         full_path in full_paths or
                         is_pull_blocked(full_path) or
                         full_path == directory / download_directory
