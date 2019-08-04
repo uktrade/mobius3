@@ -204,6 +204,7 @@ def Syncer(
         local_modification_persistance=120,
         download_interval=10,
         exclude_remote=r'^$',
+        exclude_local=r'^$',
 ):
 
     loop = asyncio.get_running_loop()
@@ -211,6 +212,7 @@ def Syncer(
 
     directory = PurePosixPath(directory)
     exclude_remote = re.compile(exclude_remote)
+    exclude_local = re.compile(exclude_local)
 
     # The file descriptor returned from inotify_init
     fd = None
@@ -466,7 +468,6 @@ def Syncer(
             if PurePosixPath(root) == directory / download_directory:
                 continue
             for file in files:
-                logger.info('Scheduling upload: %s', PurePosixPath(root) / file)
                 schedule_upload(logger, PurePosixPath(root) / file)
 
             for d in dirs:
@@ -629,6 +630,10 @@ def Syncer(
         return path_locks.setdefault(path, default=FifoLock())
 
     def schedule_upload(logger, path):
+        if exclude_local.match(str(path)):
+            logger.info('Excluding from upload: %s', path)
+            return
+
         version_current = get_content_version(path)
         version_original = version_current.copy()
 
@@ -1177,6 +1182,12 @@ def main():
         nargs='?',
         help='Regex of keys to not be downloaded')
     parser.add_argument(
+        '--exclude-local',
+        metavar='exclude-local',
+        default='^$',
+        nargs='?',
+        help='Regex of paths to not be uploaded')
+    parser.add_argument(
         '--disable-ssl-verification',
         metavar='',
         nargs='?', const=True, default=False)
@@ -1224,6 +1235,7 @@ def main():
         'prefix': parsed_args.prefix,
         'region': parsed_args.region,
         'exclude_remote': parsed_args.exclude_remote,
+        'exclude_local': parsed_args.exclude_local,
         'get_pool': lambda: Pool(**pool_args),
         'get_credentials':
             get_credentials_from_environment if creds_source == 'envrionment-variables' else

@@ -116,7 +116,33 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(body_bytes, b'more-bytes')
 
     @async_test
-    async def test_not_ignored_files_at_start(self):
+    async def test_exclude_local_after_start(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop = syncer_for('/s3-home-folder', exclude_local=r'.*to-exclude.*')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename_1 = str(uuid.uuid4())
+        filename_2 = str(uuid.uuid4()) + 'to-exclude'
+        with open(f'/s3-home-folder/{filename_1}', 'wb') as file:
+            file.write(b'some-bytes-a')
+        with open(f'/s3-home-folder/{filename_2}', 'wb') as file:
+            file.write(b'some-bytes-b')
+
+        await asyncio.sleep(1)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename_1), b'some-bytes-a')
+        self.assertEqual(await object_code(request, filename_2), b'404')
+
+    @async_test
+    async def test_exclude_remote_at_start(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
@@ -1783,7 +1809,8 @@ async def terminate(process):
 
 def syncer_for(path, prefix='',
                local_modification_persistance=120, download_interval=60,
-               exclude_remote=re.compile(r'^$')):
+               exclude_remote='^$',
+               exclude_local='^$',):
     return Syncer(
         path, 'https://minio:9000/my-bucket/', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
@@ -1791,6 +1818,7 @@ def syncer_for(path, prefix='',
         local_modification_persistance=local_modification_persistance,
         download_interval=download_interval,
         exclude_remote=exclude_remote,
+        exclude_local=exclude_local,
     )
 
 
