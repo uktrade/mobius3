@@ -278,7 +278,13 @@ class TestIntegration(unittest.TestCase):
         app.add_routes([
             web.get(f'/my-bucket/', handle_list),
             web.get(f'/my-bucket/{dirname_1}/', handle_dir),
+            web.get(f'/my-bucket/{dirname_2}/', handle_dir),
             web.get(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir),
+            # It's not great that downloads then attempt to re-upload
+            web.put(f'/my-bucket/', handle_list),
+            web.put(f'/my-bucket/{dirname_1}/', handle_dir),
+            web.put(f'/my-bucket/{dirname_2}/', handle_dir),
+            web.put(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir),
         ])
         runner = web.AppRunner(app)
         await runner.setup()
@@ -402,6 +408,84 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(close)
 
         self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+    @async_test
+    async def test_directory_uploaded_after_start_then_manipulated(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        dirname_1 = str(uuid.uuid4())
+        dirname_2 = str(uuid.uuid4())
+        dirname_3 = str(uuid.uuid4())
+        dirname_4 = str(uuid.uuid4())
+
+        start, stop = Syncer(
+            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+        )
+        self.add_async_cleanup(stop)
+
+        async def handle_list(_):
+            body = f'''<?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+            </ListBucketResult>'''.encode()
+            return web.Response(status=200, body=body)
+
+        delete_paths = []
+        put_paths = []
+
+        async def handle_dir_delete(request):
+            delete_paths.append(request.url.path)
+
+            return web.Response(status=200, body=b'')
+
+        async def handle_dir_put(request):
+            put_paths.append(request.url.path)
+
+            return web.Response(status=200, headers={
+                'last-modified': 'Fri, 10 May 2019 06:53:17 GMT',
+                'etag': '"fba9dede5f27731c9771645a39863328"',
+            }, body=b'')
+
+        app = web.Application()
+        app.add_routes([
+            web.get(f'/my-bucket/', handle_list),
+            web.put(f'/my-bucket/{dirname_1}/', handle_dir_put),
+            web.put(f'/my-bucket/{dirname_2}/', handle_dir_put),
+            web.put(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir_put),
+            web.put(f'/my-bucket/{dirname_4}/', handle_dir_put),
+            web.put(f'/my-bucket/{dirname_4}/{dirname_3}/', handle_dir_put),
+            web.delete(f'/my-bucket/{dirname_1}/', handle_dir_delete),
+            web.delete(f'/my-bucket/{dirname_2}/', handle_dir_delete),
+            web.delete(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir_delete),
+        ])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self.add_async_cleanup(runner.cleanup)
+        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        await site.start()
+
+        await start()
+
+        os.mkdir(f'/s3-home-folder/{dirname_1}')
+        os.mkdir(f'/s3-home-folder/{dirname_2}')
+        os.mkdir(f'/s3-home-folder/{dirname_2}/{dirname_3}')
+
+        await asyncio.sleep(1)
+
+        self.assertIn(f'/my-bucket/{dirname_1}/', put_paths)
+        self.assertIn(f'/my-bucket/{dirname_2}/', put_paths)
+        self.assertIn(f'/my-bucket/{dirname_2}/{dirname_3}/', put_paths)
+
+        os.rmdir(f'/s3-home-folder/{dirname_1}')
+        os.rename(f'/s3-home-folder/{dirname_2}', f'/s3-home-folder/{dirname_4}')
+
+        await asyncio.sleep(1)
+
+        self.assertIn(f'/my-bucket/{dirname_1}/', delete_paths)
+        self.assertIn(f'/my-bucket/{dirname_2}/', delete_paths)
+        self.assertIn(f'/my-bucket/{dirname_2}/{dirname_3}/', delete_paths)
+        self.assertIn(f'/my-bucket/{dirname_4}/', put_paths)
+        self.assertIn(f'/my-bucket/{dirname_4}/{dirname_3}/', put_paths)
 
     @async_test
     async def test_single_medium_file_uploaded(self):

@@ -314,17 +314,28 @@ def Syncer(
     )
 
     def ensure_file_in_tree_cache(path):
+        parent_dir = ensure_parent_dir_in_tree_cache(path)
+        parent_dir['children'][path.name] = {
+            'type': 'file',
+        }
+
+    def ensure_dir_in_tree_cache(path):
+        parent_dir = ensure_parent_dir_in_tree_cache(path)
+        parent_dir['children'].setdefault(path.name, {
+            'type': 'directory',
+            'children': {},
+        })
+
+    def ensure_parent_dir_in_tree_cache(path):
         directory = tree_cache_root
         for parent in reversed(list(path.parents)):
             directory = directory['children'].setdefault(parent.name, {
                 'type': 'directory',
                 'children': {},
             })
-        directory['children'][path.name] = {
-            'type': 'file',
-        }
+        return directory
 
-    def remove_file_from_tree_cache(path):
+    def remove_from_tree_cache(path):
         directory = tree_cache_root
         for parent in reversed(list(path.parents)):
             directory = directory['children'][parent.name]
@@ -445,6 +456,10 @@ def Syncer(
     def watch_and_upload_directory(logger, path, mask):
         watch_directory(path, mask)
 
+        if PurePosixPath(path) not in [directory, directory / download_directory]:
+            logger.info('Scheduling upload directory: %s', path)
+            schedule_upload_directory(logger, path)
+
         # By the time we've added a watcher, files or subdirectories may have
         # already been created
         for root, dirs, files in os.walk(path):
@@ -466,6 +481,7 @@ def Syncer(
                     schedule_delete(logger, prefix / child_name)
                 else:
                     recursive_delete(prefix / child_name, child)
+                    schedule_delete_directory(logger, prefix / child_name)
 
         try:
             cache_directory = tree_cache_directory(path)
@@ -477,6 +493,7 @@ def Syncer(
             pass
         else:
             recursive_delete(path, cache_directory)
+            schedule_delete_directory(logger, path)
 
     def read_events(parent_logger):
         FIONREAD_output = array.array('i', [0])
@@ -562,6 +579,16 @@ def Syncer(
         bump_content_version(path)
         schedule_delete(logger, path)
 
+    def handle__dir__IN_DELETE(logger, _, __, path):
+        try:
+            del ignore_next_delete[path]
+        except KeyError:
+            pass
+        else:
+            return
+
+        schedule_delete_directory(logger, path)
+
     def handle__file__IN_IGNORED(_, wd, __, ___):
         # For some reason IN_ISDIR is not set with IN_IGNORED
         del wds_to_path[wd]
@@ -579,7 +606,10 @@ def Syncer(
             pass
         schedule_delete(logger, path)
 
-    def handle__dir__IN_MOVED_TO(logger, _, __, path):
+    def handle__dir__IN_MOVED_TO(logger, _, cookie, path):
+        if cookie in download_cookies:
+            logger.debug('Cookie: %s', cookie)
+            return
         watch_and_upload_directory(logger, path, WATCH_MASK)
 
     def handle__file__IN_MOVED_TO(logger, _, cookie, path):
@@ -612,6 +642,17 @@ def Syncer(
         upload_job_queue.put_nowait((logger, function))
         queued_push_local_change(path)
 
+    def schedule_upload_directory(logger, path):
+        async def function():
+            try:
+                await upload_directory(logger, path)
+            finally:
+                completed_push_local_change(path)
+
+        ensure_dir_in_tree_cache(path)
+        upload_job_queue.put_nowait((logger, function))
+        queued_push_local_change(path)
+
     def schedule_delete(logger, path):
         version_current = get_content_version(path)
         version_original = version_current.copy()
@@ -623,13 +664,24 @@ def Syncer(
                 completed_push_local_change(path)
 
         try:
-            remove_file_from_tree_cache(path)
+            remove_from_tree_cache(path)
         except KeyError:
-            # Create events for files do not register a file in the cache,
-            # until they are scheduled for upload on modification. If this
-            # doesn't happen, then the file won't be in the cache, and we
-            # have nothing to upload
-            return
+            pass
+        upload_job_queue.put_nowait((logger, function))
+        queued_push_local_change(path)
+
+    def schedule_delete_directory(logger, path):
+        async def function():
+            try:
+                await delete_directory(logger, path)
+            finally:
+                completed_push_local_change(path)
+
+        try:
+            remove_from_tree_cache(path)
+        except KeyError:
+            pass
+
         upload_job_queue.put_nowait((logger, function))
         queued_push_local_change(path)
 
@@ -729,6 +781,23 @@ def Syncer(
         etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
         etags[path] = etag
 
+    async def upload_directory(logger, path):
+        logger.info('Uploading directory %s', path)
+
+        mtime = str(os.path.getmtime(path)).encode()
+
+        if not os.path.isdir(path):
+            raise FileContentChanged(path)
+
+        headers = await locked_request_dir(
+            logger, b'PUT', path, headers=(
+                (b'content-length', b'0'),
+                (b'x-amz-meta-mtime', mtime),
+            ),
+        )
+        etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
+        etags[path] = etag
+
     async def delete(logger, path, content_version_current, content_version_original):
         logger.info('Deleting %s', path)
 
@@ -747,8 +816,31 @@ def Syncer(
 
         await locked_request(logger, b'DELETE', path)
 
+    async def delete_directory(logger, path):
+        logger.info('Deleting directory %s', path)
+
+        if os.path.isdir(path):
+            raise FileContentChanged(path)
+
+        await locked_request_dir(logger, b'DELETE', path)
+
     async def locked_request(logger, method, path, headers=(), body=empty_async_iterator):
         remote_url = bucket + prefix + str(path.relative_to(directory))
+
+        async with get_lock(path)(Mutex):
+            logger.debug('%s %s %s', method.decode(), remote_url, headers)
+            code, headers, body = await signed_request(
+                logger, method, remote_url, headers=headers, body=body)
+            logger.debug('%s %s', code, headers)
+            body_bytes = await buffered(body)
+
+        if code not in [b'200', b'204']:
+            raise Exception(code, body_bytes)
+
+        return headers
+
+    async def locked_request_dir(logger, method, path, headers=(), body=empty_async_iterator):
+        remote_url = bucket + prefix + str(path.relative_to(directory)) + '/'
 
         async with get_lock(path)(Mutex):
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
@@ -902,6 +994,8 @@ def Syncer(
                 # renames will attempt to move the file
                 if not is_directory:
                     ensure_file_in_tree_cache(full_path)
+                else:
+                    ensure_dir_in_tree_cache(full_path)
             finally:
                 try:
                     os.remove(temporary_path)
