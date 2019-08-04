@@ -1029,7 +1029,10 @@ def Syncer(
                     ensure_dir_in_tree_cache(full_path)
             finally:
                 try:
-                    os.remove(temporary_path)
+                    if is_directory:
+                        os.rmdir(temporary_path)
+                    else:
+                        os.remove(temporary_path)
                 except FileNotFoundError:
                     pass
             etags[full_path] = headers_dict[b'etag'].decode()
