@@ -300,6 +300,78 @@ class TestIntegration(unittest.TestCase):
                          1557471197.0)
 
     @async_test
+    async def test_delete_downloaded_directory(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        dirname_1 = str(uuid.uuid4())
+        dirname_2 = str(uuid.uuid4())
+
+        with_dirs = f'''<?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                <Contents>
+                    <Key>{dirname_1}/{dirname_2}/</Key>
+                    <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                </Contents>
+            </ListBucketResult>'''.encode()
+
+        without_dirs = f'''<?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+            </ListBucketResult>'''.encode()
+
+        list_body = with_dirs
+        get_code = 200
+        get_headers = {
+            'last-modified': 'Fri, 10 May 2019 06:53:17 GMT',
+            'etag': '"fba9dede5f27731c9771645a39863328"',
+        }
+
+        start, stop = Syncer(
+            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+            local_modification_persistance=1,
+            download_interval=1,
+        )
+        self.add_async_cleanup(stop)
+
+        # minio does not support keys with trailing slashes, so we fire up our
+        # own mock S3
+        async def handle_list(_):
+            return web.Response(status=200, body=list_body)
+
+        async def handle_dir(_):
+            return web.Response(status=get_code, headers=get_headers, body=b'')
+
+        app = web.Application()
+        app.add_routes([
+            web.get(f'/my-bucket/', handle_list),
+            web.get(f'/my-bucket/{dirname_1}/', handle_dir),
+            web.get(f'/my-bucket/{dirname_1}/{dirname_2}/', handle_dir),
+            # It's not great that downloads then attempt to re-upload
+            web.put(f'/my-bucket/{dirname_1}/', handle_dir),
+            web.put(f'/my-bucket/{dirname_1}/{dirname_2}/', handle_dir),
+        ])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self.add_async_cleanup(runner.cleanup)
+        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        await site.start()
+
+        await start()
+
+        self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_1}/{dirname_2}'))
+
+        await asyncio.sleep(1)
+
+        # Simulate files having been deleted on S3
+        list_body = without_dirs
+        get_code = 404
+        get_headers = {}
+
+        await asyncio.sleep(2)
+
+        self.assertFalse(os.path.exists(f'/s3-home-folder/{dirname_1}'))
+
+    @async_test
     async def test_download_file_not_done_during_local_persistance(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)

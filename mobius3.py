@@ -886,7 +886,7 @@ def Syncer(
             schedule_download(logger, path)
 
         full_paths = set(directory / path for path, _ in path_etags)
-        for root, _, files in os.walk(directory):
+        for root, dirs, files in os.walk(directory, topdown=False):
             for file in files:
                 full_path = PurePosixPath(root) / file
                 if full_path in full_paths or is_pull_blocked(full_path):
@@ -903,7 +903,7 @@ def Syncer(
                 # Check again if we have made modifications since the above request can take time
                 try:
                     await flush_events(logger, full_path)
-                except FileNotFoundError:
+                except (FileNotFoundError, OSError):
                     continue
                 if is_pull_blocked(full_path):
                     continue
@@ -911,7 +911,7 @@ def Syncer(
                 try:
                     logger.info('Deleting locally %s', full_path)
                     os.remove(full_path)
-                except FileNotFoundError:
+                except (FileNotFoundError, OSError):
                     pass
                 else:
                     # The remove will queue a remote DELETE. However, the file already doesn't
@@ -919,6 +919,37 @@ def Syncer(
                     # data either added by another client, or even from this one in the case
                     # of an extremely long eventual consistency issue where a PUT of a object
                     # that did not previously exist is still appearing
+                    ignore_next_delete[full_path] = True
+
+            for dir_ in dirs:
+                full_path = PurePosixPath(root) / dir_
+                if (
+                        full_path in full_paths or
+                        is_pull_blocked(full_path) or
+                        full_path == directory / download_directory
+                ):
+                    continue
+
+                path = full_path.relative_to(directory)
+                code, _, body = await signed_request(
+                    logger, b'HEAD', bucket + prefix + str(path) + '/')
+                await buffered(body)
+                if code != b'404':
+                    continue
+
+                try:
+                    await flush_events(logger, full_path)
+                except (FileNotFoundError, OSError):
+                    continue
+                if is_pull_blocked(full_path):
+                    continue
+
+                try:
+                    logger.info('Deleting locally %s', full_path)
+                    os.rmdir(full_path)
+                except (FileNotFoundError, OSError):
+                    pass
+                else:
                     ignore_next_delete[full_path] = True
 
     def schedule_download(logger, path):
