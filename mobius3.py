@@ -468,6 +468,7 @@ def Syncer(
             if PurePosixPath(root) == directory / download_directory:
                 continue
             for file in files:
+                logger.info('Scheduling upload: %s', PurePosixPath(root) / file)
                 schedule_upload(logger, PurePosixPath(root) / file)
 
             for d in dirs:
@@ -648,6 +649,10 @@ def Syncer(
         queued_push_local_change(path)
 
     def schedule_upload_directory(logger, path):
+        if exclude_local.match(str(path)):
+            logger.info('Excluding from upload: %s', path)
+            return
+
         async def function():
             try:
                 await upload_directory(logger, path)

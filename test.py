@@ -128,9 +128,14 @@ class TestIntegration(unittest.TestCase):
 
         filename_1 = str(uuid.uuid4())
         filename_2 = str(uuid.uuid4()) + 'to-exclude'
+        dirname_1 = str(uuid.uuid4()) + 'to-exclude'
+        filename_3 = str(uuid.uuid4())
         with open(f'/s3-home-folder/{filename_1}', 'wb') as file:
             file.write(b'some-bytes-a')
         with open(f'/s3-home-folder/{filename_2}', 'wb') as file:
+            file.write(b'some-bytes-b')
+        os.mkdir(f'/s3-home-folder/{dirname_1}')
+        with open(f'/s3-home-folder/{dirname_1}/{filename_3}', 'wb') as file:
             file.write(b'some-bytes-b')
 
         await asyncio.sleep(1)
@@ -140,6 +145,10 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(await object_body(request, filename_1), b'some-bytes-a')
         self.assertEqual(await object_code(request, filename_2), b'404')
+        self.assertEqual(await object_code(request, f'{dirname_1}/{filename_3}'), b'404')
+
+        # Minio seems to return a 200 for all folders, but this _should_ assertEqual for S3 proper
+        # self.assertEqual(await object_code(request, f'{dirname_1}/'), b'404')
 
     @async_test
     async def test_exclude_remote_at_start(self):
