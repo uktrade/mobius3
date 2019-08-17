@@ -4,8 +4,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile-test
-    links:
-      - "minio"
     environment:
       - AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
       - AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
@@ -13,6 +11,12 @@ services:
       - type: volume
         source: minio-buckets
         target: /test-data
+    networks:
+      ecs_emulation:
+        ipv4_address: '169.254.170.3'
+    depends_on:
+      - minio
+
   minio:
     build:
       context: .
@@ -27,6 +31,16 @@ services:
       - type: volume
         source: minio-buckets
         target: /test-data
+    networks:
+      ecs_emulation:
+        ipv4_address: '169.254.170.4'
 
 volumes:
   minio-buckets:
+
+networks:
+  ecs_emulation:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: '169.254.170.0/24'
