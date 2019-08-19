@@ -9,6 +9,8 @@ RUN \
 	apk add --no-cache \
 		python3 && \
 	pip3 install \
-		coverage==4.5.3
+		coverage==4.5.3 && \
+	wget https://dl.min.io/client/mc/release/linux-amd64/mc && \
+	chmod +x mc
 
 COPY LICENSE README.md mobius3.py setup.py test.py test_with_coverage.sh .coveragerc /
