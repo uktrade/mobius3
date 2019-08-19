@@ -32,6 +32,7 @@ setuptools.setup(
     test_suite='test',
     tests_require=[
         'aiohttp~=3.5.4',
+        'lowhaio-aws-sigv4>=0.0.4',
     ],
     entry_points={
         'console_scripts': [

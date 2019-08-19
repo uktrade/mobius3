@@ -4,15 +4,21 @@ services:
     build:
       context: .
       dockerfile: Dockerfile-test
-    links:
-      - "minio"
     environment:
       - AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
       - AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+      # ECS adds this environment variable
+      - AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds
     volumes:
       - type: volume
         source: minio-buckets
         target: /test-data
+    networks:
+      ecs_emulation:
+        ipv4_address: '169.254.170.3'
+    depends_on:
+      - minio
+      - ecs-credentials-endpoint
   minio:
     build:
       context: .
@@ -27,6 +33,29 @@ services:
       - type: volume
         source: minio-buckets
         target: /test-data
+    networks:
+      ecs_emulation:
+        ipv4_address: '169.254.170.4'
 
+  ecs-credentials-endpoint:
+    build:
+      context: .
+      dockerfile: Dockerfile-ecs-credentials
+    environment:
+      # So the mock ECS credentials server can simulate the real one
+      - AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds
+    ports:
+      - "80:80"
+    networks:
+      ecs_emulation:
+        # ECS provides a similar service at this exact address
+        ipv4_address: '169.254.170.2'
 volumes:
   minio-buckets:
+
+networks:
+  ecs_emulation:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: '169.254.170.0/24'

@@ -1,13 +1,16 @@
+
 import asyncio
 from datetime import (
     datetime,
 )
+import json
 import os
 import re
 import shutil
 import ssl
 import sys
 import unittest
+import urllib.parse
 import uuid
 
 from aiodnsresolver import (
@@ -21,7 +24,7 @@ from lowhaio import (
     buffered,
     streamed,
 )
-from lowhaio_aws_sigv4_unsigned_payload import (
+from lowhaio_aws_sigv4 import (
     signed,
 )
 from mobius3 import (
@@ -1658,6 +1661,38 @@ class TestEndToEnd(unittest.TestCase):
         await await_upload()
 
     @async_test
+    async def test_direct_script_ecs_auth(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        await set_temporary_creds(request)
+
+        mobius3_process = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'mobius3',
+            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--credentials-source', 'ecs-container-endpoint',
+            env=os.environ, stdout=asyncio.subprocess.PIPE,
+        )
+        self.add_async_cleanup(terminate, mobius3_process)
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+        await await_upload()
+
+        self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+        await await_upload()
+
+    @async_test
     async def test_direct_script_delay(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
@@ -1879,6 +1914,77 @@ async def put_body(request, key, body):
         request, credentials=get_credentials_from_environment,
         service='s3', region='us-east-1',
     )
-    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}',
-                                headers=((b'content-length', str(len(body)).encode()),),
-                                body=streamed(body))
+    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}', body=streamed(body))
+
+
+async def set_temporary_creds(request):
+    admin_access_key_id, admin_secret_access_key, _ = await get_credentials_from_environment()
+
+    # minio doesn't seem to be able to give temporary creds for the main user
+    user_access_key_id = str(uuid.uuid4())[:8]
+    user_secret_access_key = str(uuid.uuid4())[:8]
+
+    async def new_user_creds():
+        return user_access_key_id, user_secret_access_key, ()
+
+    proc = await asyncio.create_subprocess_exec(
+        './mc', '--insecure', 'config', 'host', 'add', 'myminio',
+        'https://minio:9000', admin_access_key_id, admin_secret_access_key,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE)
+    stdout, stderr = await proc.communicate()
+    if proc.returncode:
+        raise Exception(stdout + stderr)
+
+    proc = await asyncio.create_subprocess_exec(
+        './mc', '--insecure', 'admin', 'user', 'add', 'myminio',
+        user_access_key_id, user_secret_access_key,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE)
+    stdout, stderr = await proc.communicate()
+    if proc.returncode:
+        raise Exception(stdout + stderr)
+
+    proc = await asyncio.create_subprocess_exec(
+        './mc', '--insecure', 'admin', 'policy', 'set', 'myminio', 'readwrite',
+        'user=' + user_access_key_id,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE)
+    stdout, stderr = await proc.communicate()
+    if proc.returncode:
+        raise Exception(stdout + stderr)
+
+    signed_request = signed(
+        request, credentials=new_user_creds,
+        service='sts', region='us-east-1',
+    )
+    request_body_bytes = urllib.parse.urlencode((
+        ('Action', 'AssumeRole'),
+        ('Version', '2011-06-15'),
+    )).encode('utf-8')
+    _, _, body = await signed_request(
+        b'POST', 'https://minio:9000/',
+        headers=(
+            (b'content-type', b'application/x-www-form-urlencoded; charset=utf-8'),
+        ),
+        body=streamed(request_body_bytes),
+    )
+    body_bytes = await buffered(body)
+
+    def xml(tag):
+        return re.search(b'<' + tag + b'>(.*)</' + tag + b'>', body_bytes)[1].decode('utf-8')
+
+    creds = {
+        'AccessKeyId': xml(b'AccessKeyId'),
+        'SecretAccessKey': xml(b'SecretAccessKey'),
+        'Expiration': xml(b'Expiration'),
+        'Token': xml(b'SessionToken'),
+    }
+
+    request_body_bytes = json.dumps(creds).encode('utf-8')
+    _, _, body = await request(
+        b'POST', 'http://169.254.170.2/creds', body=streamed(request_body_bytes), headers=(
+            (b'content-length', str(len(request_body_bytes)).encode()),
+        ))
+    await buffered(body)
+    return creds
