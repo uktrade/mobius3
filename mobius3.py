@@ -610,6 +610,7 @@ def Syncer(
 
     def handle__dir__IN_MOVED_TO(logger, _, cookie, path):
         if cookie in download_cookies:
+            watch_directory(path, WATCH_MASK)
             logger.debug('Cookie: %s', cookie)
             return
         watch_and_upload_directory(logger, path, WATCH_MASK)
