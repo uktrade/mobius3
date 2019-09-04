@@ -307,6 +307,10 @@ class TestIntegration(unittest.TestCase):
                     <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
                 </Contents>
                 <Contents>
+                    <Key>{dirname_1}/some-file</Key>
+                    <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                </Contents>
+                <Contents>
                     <Key>{dirname_2}/{dirname_3}/</Key>
                     <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
                 </Contents>
@@ -319,10 +323,17 @@ class TestIntegration(unittest.TestCase):
                 'etag': '"fba9dede5f27731c9771645a39863328"',
             }, body=b'')
 
+        async def handle_file(_):
+            return web.Response(status=200, headers={
+                'last-modified': 'Fri, 10 May 2019 06:53:17 GMT',
+                'etag': '"fba9dede5f27731c9771645a39863328"',
+            }, body=b'some-bytes')
+
         app = web.Application()
         app.add_routes([
             web.get(f'/my-bucket/', handle_list),
             web.get(f'/my-bucket/{dirname_1}/', handle_dir),
+            web.get(f'/my-bucket/{dirname_1}/some-file', handle_file),
             web.get(f'/my-bucket/{dirname_2}/', handle_dir),
             web.get(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir),
             # It's not great that downloads then attempt to re-upload
@@ -338,6 +349,10 @@ class TestIntegration(unittest.TestCase):
         await site.start()
 
         await start()
+
+        with open(f'/s3-home-folder/{dirname_1}/some-file', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-bytes')
 
         self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_1}'))
         self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_2}/{dirname_3}'))
