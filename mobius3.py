@@ -608,11 +608,7 @@ def Syncer(
             pass
         schedule_delete(logger, path)
 
-    def handle__dir__IN_MOVED_TO(logger, _, cookie, path):
-        if cookie in download_cookies:
-            watch_directory(path, WATCH_MASK)
-            logger.debug('Cookie: %s', cookie)
-            return
+    def handle__dir__IN_MOVED_TO(logger, _, __, path):
         watch_and_upload_directory(logger, path, WATCH_MASK)
 
     def handle__file__IN_MOVED_TO(logger, _, cookie, path):
@@ -1002,16 +998,28 @@ def Syncer(
                     headers_dict[b'last-modified'].decode(),
                     '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
-            temporary_path = directory / download_directory / uuid.uuid4().hex
             is_directory = path[-1] == '/'
+
+            if is_directory:
+                await buffered(body)
+
+                if is_pull_blocked(full_path):
+                    logger.debug('Recently changed locally, not changing: %s', full_path)
+                    return
+
+                os.mkdir(full_path)
+                os.utime(full_path, (modified, modified))
+                etags[full_path] = headers_dict[b'etag'].decode()
+
+                # Ensure that subsequent renames will attempt to move the directory
+                ensure_dir_in_tree_cache(full_path)
+                return
+
+            temporary_path = directory / download_directory / uuid.uuid4().hex
             try:
-                if is_directory:
-                    os.mkdir(temporary_path)
-                    await buffered(body)
-                else:
-                    with open(temporary_path, 'wb') as file:
-                        async for chunk in body:
-                            file.write(chunk)
+                with open(temporary_path, 'wb') as file:
+                    async for chunk in body:
+                        file.write(chunk)
 
                 # May raise a FileNotFoundError if the directory no longer
                 # exists, but handled at higher level
@@ -1035,21 +1043,14 @@ def Syncer(
                     logger.debug('Recently changed locally, not changing: %s', full_path)
                     return
 
-                logger.debug('Moving to %s', full_path)
                 os.replace(temporary_path, full_path)
 
                 # Ensure that once we move the file into place, subsequent
                 # renames will attempt to move the file
-                if not is_directory:
-                    ensure_file_in_tree_cache(full_path)
-                else:
-                    ensure_dir_in_tree_cache(full_path)
+                ensure_file_in_tree_cache(full_path)
             finally:
                 try:
-                    if is_directory:
-                        os.rmdir(temporary_path)
-                    else:
-                        os.remove(temporary_path)
+                    os.remove(temporary_path)
                 except FileNotFoundError:
                     pass
             etags[full_path] = headers_dict[b'etag'].decode()
