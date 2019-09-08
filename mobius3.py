@@ -938,10 +938,11 @@ def Syncer(
 
             for dir_ in dirs:
                 full_path = PurePosixPath(root) / dir_
+                # We don't check is_pull_blocked, since deleting files above changes the mtime of
+                # the directory, and so would result in much slower deep tree removal
                 if (
                         exclude_local.match(str(full_path)) or
                         full_path in full_paths or
-                        is_pull_blocked(full_path) or
                         full_path == directory / download_directory
                 ):
                     logger.debug('Skipping delete directory %s', full_path)
@@ -958,8 +959,6 @@ def Syncer(
                     await flush_events(logger, full_path)
                 except (FileNotFoundError, OSError):
                     logger.debug('Skipping delete directory from failed flush %s', full_path)
-                    continue
-                if is_pull_blocked(full_path):
                     continue
 
                 try:
