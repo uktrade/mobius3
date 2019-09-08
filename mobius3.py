@@ -902,6 +902,7 @@ def Syncer(
                         full_path in full_paths or
                         is_pull_blocked(full_path)
                 ):
+                    logger.debug('Skipping delete file from first check %s', full_path)
                     continue
 
                 # Since walking the filesystem can take time we might have a new file that we have
@@ -916,15 +917,17 @@ def Syncer(
                 try:
                     await flush_events(logger, full_path)
                 except (FileNotFoundError, OSError):
+                    logger.debug('Unable to delete file %s', full_path)
                     continue
                 if is_pull_blocked(full_path):
+                    logger.debug('Skipping delete file from second check %s', full_path)
                     continue
 
                 try:
                     logger.info('Deleting locally %s', full_path)
                     os.remove(full_path)
                 except (FileNotFoundError, OSError):
-                    pass
+                    logger.debug('Unable to delete directory %s', full_path)
                 else:
                     # The remove will queue a remote DELETE. However, the file already doesn't
                     # appear to exist in S3, so a) there is no need and b) may actually delete
@@ -941,6 +944,7 @@ def Syncer(
                         is_pull_blocked(full_path) or
                         full_path == directory / download_directory
                 ):
+                    logger.debug('Skipping delete directory %s', full_path)
                     continue
 
                 path = full_path.relative_to(directory)
@@ -953,6 +957,7 @@ def Syncer(
                 try:
                     await flush_events(logger, full_path)
                 except (FileNotFoundError, OSError):
+                    logger.debug('Skipping delete directory from failed flush %s', full_path)
                     continue
                 if is_pull_blocked(full_path):
                     continue
@@ -961,7 +966,7 @@ def Syncer(
                     logger.info('Deleting locally %s', full_path)
                     os.rmdir(full_path)
                 except (FileNotFoundError, OSError):
-                    pass
+                    logger.exception('Unable to delete')
                 else:
                     ignore_next_delete[full_path] = True
 
