@@ -1,4 +1,4 @@
-FROM minio/minio:RELEASE.2019-08-14T20-37-41Z
+FROM minio/minio:RELEASE.2019-12-30T05-45-39Z
 
 RUN \
 	apk add --no-cache \
