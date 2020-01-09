@@ -1077,6 +1077,9 @@ def Syncer(
                 if element.tag == f'{namespace}Contents':
                     key = first_child_text(element, f'{namespace}Key')
                     key_relative = key[len(prefix):]
+                    if key_relative == '':
+                        # Don't include the prefix itself, if it exists
+                        continue
                     if exclude_remote.match(key_relative):
                         logger.info('Excluding: %s', key_relative)
                         continue
