@@ -6,6 +6,9 @@ echo "import coverage; coverage.process_startup()" > "${SITE_PACKAGES_DIR}/cover
 export COVERAGE_PROCESS_START=.coveragerc
 
 python3 setup.py test "$@"
+SUCCESS=$?
 
 coverage combine
 coverage xml
+
+exit $SUCCESS

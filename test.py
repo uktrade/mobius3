@@ -234,6 +234,51 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(date_ts, os.path.getmtime(f'/s3-home-folder/{filename_1}'))
 
     @async_test
+    async def test_download_file_after_start_with_existing_prefix_object(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        # We want to ensure nothing bad happens if the remote prefix object
+        # exists [essentially, we ignore this object]
+        delete_prefix_dir = create_directory('/test-data/my-bucket/prefix')
+        self.add_async_cleanup(delete_prefix_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        start, stop = syncer_for(
+            '/s3-home-folder', prefix='prefix/',
+            download_interval=1)
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        filename_1 = str(uuid.uuid4())
+        code, headers, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
+        self.assertEqual(code, b'200')
+
+        date = dict((key.lower(), value) for key, value in headers)[b'date']
+        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+
+        await buffered(body)
+
+        await asyncio.sleep(2)
+
+        with open(f'/s3-home-folder/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+
+        self.assertEqual(body_bytes, b'some-bytes')
+        self.assertEqual(date_ts, os.path.getmtime(f'/s3-home-folder/{filename_1}'))
+
+        await asyncio.sleep(2)
+
+        # Ensure the file isn't re-downloaded, or at least if it is, it has
+        # the correct mtime
+        self.assertEqual(date_ts, os.path.getmtime(f'/s3-home-folder/{filename_1}'))
+
+    @async_test
     async def test_download_nested_file_after_start(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
@@ -341,6 +386,90 @@ class TestIntegration(unittest.TestCase):
             web.put(f'/my-bucket/{dirname_1}/', handle_dir),
             web.put(f'/my-bucket/{dirname_2}/', handle_dir),
             web.put(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir),
+        ])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self.add_async_cleanup(runner.cleanup)
+        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        await site.start()
+
+        await start()
+
+        with open(f'/s3-home-folder/{dirname_1}/some-file', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-bytes')
+
+        self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_1}'))
+        self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_2}/{dirname_3}'))
+        self.assertEqual(os.path.getmtime(f'/s3-home-folder/{dirname_2}/{dirname_3}'),
+                         1557471197.0)
+
+    @async_test
+    async def test_download_directory_in_prefix_after_start(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        dirname_1 = str(uuid.uuid4())
+        dirname_2 = str(uuid.uuid4())
+        dirname_3 = str(uuid.uuid4())
+
+        start, stop = Syncer(
+            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+            prefix='prefix/'
+        )
+        self.add_async_cleanup(stop)
+
+        # minio does not support keys with trailing slashes, so we fire up our
+        # own mock S3
+        async def handle_list(_):
+            body = f'''<?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                <Contents>
+                    <Key>prefix/</Key>
+                    <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                </Contents>
+                <Contents>
+                    <Key>prefix/{dirname_1}/</Key>
+                    <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                </Contents>
+                <Contents>
+                    <Key>prefix/{dirname_1}/some-file</Key>
+                    <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                </Contents>
+                <Contents>
+                    <Key>prefix/{dirname_2}/{dirname_3}/</Key>
+                    <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                </Contents>
+            </ListBucketResult>'''.encode()
+            return web.Response(status=200, body=body)
+
+        async def handle_dir(_):
+            return web.Response(status=200, headers={
+                'last-modified': 'Fri, 10 May 2019 06:53:17 GMT',
+                'etag': '"fba9dede5f27731c9771645a39863328"',
+            }, body=b'')
+
+        async def handle_file(_):
+            return web.Response(status=200, headers={
+                'last-modified': 'Fri, 10 May 2019 06:53:17 GMT',
+                'etag': '"fba9dede5f27731c9771645a39863328"',
+            }, body=b'some-bytes')
+
+        app = web.Application()
+        app.add_routes([
+            web.get(f'/my-bucket/', handle_list),
+            web.get(f'/my-bucket/prefix/', handle_dir),
+            web.get(f'/my-bucket/prefix/{dirname_1}/', handle_dir),
+            web.get(f'/my-bucket/prefix/{dirname_1}/some-file', handle_file),
+            web.get(f'/my-bucket/prefix/{dirname_2}/', handle_dir),
+            web.get(f'/my-bucket/prefix/{dirname_2}/{dirname_3}/', handle_dir),
+            # It's not great that downloads then attempt to re-upload
+            web.put(f'/my-bucket/', handle_list),
+            web.put(f'/my-bucket/prefix/{dirname_1}/', handle_dir),
+            web.put(f'/my-bucket/prefix/{dirname_2}/', handle_dir),
+            web.put(f'/my-bucket/prefix/{dirname_2}/{dirname_3}/', handle_dir),
         ])
         runner = web.AppRunner(app)
         await runner.setup()
