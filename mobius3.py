@@ -269,6 +269,9 @@ def Syncer(
     # When we delete a file locally, do not attempt to delete it remotely
     ignore_next_delete = {}
 
+    # When we add a directory from a download, do not attempt to reupload
+    ignore_next_directory_upload = {}
+
     # When downloading a file, we note its etag. We don't re-download it later
     # if the etag matches
     etags = {}
@@ -358,6 +361,9 @@ def Syncer(
             del push_queued[path]
         push_completed.add(path)
 
+    def is_dir_pull_blocked(path):
+        return path in push_queued or path in push_completed
+
     def is_pull_blocked(path):
         # For extremely recent modifications we may not have yielded the event
         # loop to add files to the queue. We do our best and check the mtime
@@ -403,7 +409,9 @@ def Syncer(
         nonlocal tree_cache_root
         nonlocal fd
         nonlocal ignore_next_delete
+        nonlocal ignore_next_directory_upload
         ignore_next_delete = {}
+        ignore_next_directory_upload = {}
         wds_to_path = {}
         tree_cache_root = {
             'type': 'directory',
@@ -459,8 +467,11 @@ def Syncer(
         watch_directory(path, mask)
 
         if PurePosixPath(path) not in [directory, directory / download_directory]:
-            logger.info('Scheduling upload directory: %s', path)
-            schedule_upload_directory(logger, path)
+            try:
+                del ignore_next_directory_upload[path]
+            except KeyError:
+                logger.info('Scheduling upload directory: %s', path)
+                schedule_upload_directory(logger, path)
 
         # By the time we've added a watcher, files or subdirectories may have
         # already been created
@@ -981,15 +992,37 @@ def Syncer(
                 raise Exception(code)
 
             headers_dict = dict((key.lower(), value) for key, value in headers)
-            parent_directory = directory / (PurePosixPath(path).parent)
-            try:
-                os.makedirs(parent_directory)
-            except FileExistsError:
-                logger.debug('Already exists: %s', parent_directory)
-            except NotADirectoryError:
-                logger.debug('Not a directory: %s', parent_directory)
-            except Exception:
-                logger.debug('Unable to create directory: %s', parent_directory)
+            is_directory = path[-1] == '/'
+
+            directory_to_ensure_created = \
+                full_path if is_directory else \
+                full_path.parent
+
+            # Create directories under directory
+            directory_and_parents = [directory] + list(directory.parents)
+            directory_to_ensure_created_and_paraents = list(
+                reversed(directory_to_ensure_created.parents)) + [directory_to_ensure_created]
+            directories_to_ensure_created_under_directory = [
+                _dir
+                for _dir in directory_to_ensure_created_and_paraents
+                if _dir not in directory_and_parents
+            ]
+            for _dir in directories_to_ensure_created_under_directory:
+
+                # If we don't wait for the containing directory to be watched,
+                # then we might be incorrectly ignoring
+                await wait_for_directory_watched(_dir)
+
+                try:
+                    os.mkdir(_dir)
+                except FileExistsError:
+                    logger.debug('Already exists: %s', _dir)
+                except NotADirectoryError:
+                    logger.debug('Not a directory: %s', _dir)
+                except Exception:
+                    logger.debug('Unable to create directory: %s', _dir)
+                else:
+                    ignore_next_directory_upload[_dir] = True
 
             try:
                 modified = float(headers_dict[b'x-amz-meta-mtime'])
@@ -998,16 +1031,13 @@ def Syncer(
                     headers_dict[b'last-modified'].decode(),
                     '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
-            is_directory = path[-1] == '/'
-
             if is_directory:
                 await buffered(body)
 
-                if is_pull_blocked(full_path):
+                if is_dir_pull_blocked(full_path):
                     logger.debug('Recently changed locally, not changing: %s', full_path)
                     return
 
-                os.mkdir(full_path)
                 os.utime(full_path, (modified, modified))
                 etags[full_path] = headers_dict[b'etag'].decode()
 
