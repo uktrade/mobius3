@@ -949,7 +949,7 @@ def Syncer(
                 if (
                         exclude_local.match(str(full_path)) or
                         full_path in full_paths or
-                        is_pull_blocked(full_path) or
+                        is_dir_pull_blocked(full_path) or
                         full_path == directory / download_directory
                 ):
                     continue
@@ -965,7 +965,7 @@ def Syncer(
                     await flush_events(logger, full_path)
                 except (FileNotFoundError, OSError):
                     continue
-                if is_pull_blocked(full_path):
+                if is_dir_pull_blocked(full_path):
                     continue
 
                 try:
