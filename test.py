@@ -381,11 +381,6 @@ class TestIntegration(unittest.TestCase):
             web.get(f'/my-bucket/{dirname_1}/some-file', handle_file),
             web.get(f'/my-bucket/{dirname_2}/', handle_dir),
             web.get(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir),
-            # It's not great that downloads then attempt to re-upload
-            web.put(f'/my-bucket/', handle_list),
-            web.put(f'/my-bucket/{dirname_1}/', handle_dir),
-            web.put(f'/my-bucket/{dirname_2}/', handle_dir),
-            web.put(f'/my-bucket/{dirname_2}/{dirname_3}/', handle_dir),
         ])
         runner = web.AppRunner(app)
         await runner.setup()
@@ -465,11 +460,6 @@ class TestIntegration(unittest.TestCase):
             web.get(f'/my-bucket/prefix/{dirname_1}/some-file', handle_file),
             web.get(f'/my-bucket/prefix/{dirname_2}/', handle_dir),
             web.get(f'/my-bucket/prefix/{dirname_2}/{dirname_3}/', handle_dir),
-            # It's not great that downloads then attempt to re-upload
-            web.put(f'/my-bucket/', handle_list),
-            web.put(f'/my-bucket/prefix/{dirname_1}/', handle_dir),
-            web.put(f'/my-bucket/prefix/{dirname_2}/', handle_dir),
-            web.put(f'/my-bucket/prefix/{dirname_2}/{dirname_3}/', handle_dir),
         ])
         runner = web.AppRunner(app)
         await runner.setup()
@@ -539,9 +529,6 @@ class TestIntegration(unittest.TestCase):
             web.get(f'/my-bucket/{dirname_1}/', handle_dir),
             web.get(f'/my-bucket/{dirname_1}/{dirname_2}/', handle_dir),
             web.get(f'/my-bucket/{dirname_1}/{dirname_2}/some-file', handle_file),
-            # It's not great that downloads of directories then attempt to re-upload
-            web.put(f'/my-bucket/{dirname_1}/', handle_dir),
-            web.put(f'/my-bucket/{dirname_1}/{dirname_2}/', handle_dir),
         ])
         runner = web.AppRunner(app)
         await runner.setup()
@@ -602,9 +589,6 @@ class TestIntegration(unittest.TestCase):
             web.get(f'/my-bucket/', handle_list),
             web.get(f'/my-bucket/{dirname_1}/', handle_dir),
             web.get(f'/my-bucket/{dirname_1}/{dirname_2}/', handle_dir),
-            # It's not great that downloads then attempt to re-upload
-            web.put(f'/my-bucket/{dirname_1}/', handle_dir),
-            web.put(f'/my-bucket/{dirname_1}/{dirname_2}/', handle_dir),
         ])
         runner = web.AppRunner(app)
         await runner.setup()
