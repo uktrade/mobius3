@@ -84,6 +84,7 @@ class Mutex(asyncio.Future):
 class InotifyEvents(enum.IntEnum):
     IN_MODIFY = 0x00000002
     IN_CLOSE_WRITE = 0x00000008
+    IN_CLOSE_NOWRITE = 0x00000010
     IN_MOVED_FROM = 0x00000040
     IN_MOVED_TO = 0x00000080
     IN_CREATE = 0x00000100
@@ -142,6 +143,13 @@ WATCH_MASK = \
     InotifyEvents.IN_CREATE | \
     InotifyEvents.IN_DELETE | \
     InotifyFlags.IN_ONLYDIR
+
+# For directories that can contain mmaped files, we also watch for
+# IN_CLOSE_NOWRITE. We don't watch for this in general to avoid lots of events
+# when files are opened for reading
+WATCH_MASK_MMAP = \
+    WATCH_MASK | \
+    InotifyEvents.IN_CLOSE_NOWRITE
 
 # We watch the download directly only for moves to be able to use the cookie
 # to determine if a move is from a download so we then don't re-upload it
@@ -205,6 +213,8 @@ def Syncer(
         download_interval=10,
         exclude_remote=r'^$',
         exclude_local=r'^$',
+        dirs_containing_mmapped_files=r'^$',
+        mmapped_files=r'^$',
 ):
 
     loop = asyncio.get_running_loop()
@@ -213,6 +223,8 @@ def Syncer(
     directory = PurePosixPath(directory)
     exclude_remote = re.compile(exclude_remote)
     exclude_local = re.compile(exclude_local)
+    dirs_containing_mmapped_files = re.compile(dirs_containing_mmapped_files)
+    mmapped_files = re.compile(mmapped_files)
 
     # The file descriptor returned from inotify_init
     fd = None
@@ -464,7 +476,9 @@ def Syncer(
         directory_watch_events.setdefault(path, default=asyncio.Event()).set()
 
     def watch_and_upload_directory(logger, path):
-        mask = WATCH_MASK
+        mask = \
+            WATCH_MASK_MMAP if dirs_containing_mmapped_files.match(str(path)) else \
+            WATCH_MASK
         watch_directory(path, mask)
 
         if PurePosixPath(path) not in [directory, directory / download_directory]:
@@ -541,6 +555,7 @@ def Syncer(
                 'file'
             for event in events:
                 handler_name = f'handle__{item_type}__{event.name}'
+                logger.info('%s %s', handler_name, full_path)
                 try:
                     handler = parent_locals[handler_name]
                 except KeyError:
@@ -570,6 +585,12 @@ def Syncer(
 
     def handle__file__IN_CLOSE_WRITE(logger, _, __, path):
         schedule_upload(logger, path)
+
+    def handle__file__IN_CLOSE_NOWRITE(logger, _, __, path):
+        # Heavily tailored to git mmapped pack files that are only ever uploaded once, since their
+        # filename contains a hash of their contents [minus the last twenty bytes]
+        if path not in push_queued and path not in etags and mmapped_files.match(str(path)):
+            schedule_upload(logger, path)
 
     def handle__dir__IN_CREATE(logger, _, __, path):
         watch_and_upload_directory(logger, path)
@@ -1235,6 +1256,18 @@ def main():
         nargs='?',
         help='Regex of paths to not be uploaded')
     parser.add_argument(
+        '--dirs-containing-mmapped-files',
+        metavar='dirs-containing-mmapped-files',
+        default='^$',
+        nargs='?',
+        help='Regex of paths that match directories that will contain mmapped files')
+    parser.add_argument(
+        '--mmapped-files',
+        metavar='mmapped-files',
+        default='^$',
+        nargs='?',
+        help='Regex of paths that will be changed using mmap')
+    parser.add_argument(
         '--disable-ssl-verification',
         metavar='',
         nargs='?', const=True, default=False)
@@ -1283,6 +1316,8 @@ def main():
         'region': parsed_args.region,
         'exclude_remote': parsed_args.exclude_remote,
         'exclude_local': parsed_args.exclude_local,
+        'dirs_containing_mmapped_files': parsed_args.dirs_containing_mmapped_files,
+        'mmapped_files': parsed_args.mmapped_files,
         'get_pool': lambda: Pool(**pool_args),
         'get_credentials':
             get_credentials_from_environment if creds_source == 'envrionment-variables' else
