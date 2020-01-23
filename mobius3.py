@@ -425,7 +425,7 @@ def Syncer(
 
         loop.add_reader(fd, _read_events)
         watch_directory(download_directory, DOWNLOAD_WATCH_MASK)
-        watch_and_upload_directory(logger, directory, WATCH_MASK)
+        watch_and_upload_directory(logger, directory)
 
     async def stop():
         # Make every effort to read all incoming events and finish the queue
@@ -463,7 +463,8 @@ def Syncer(
         # Notify any waiting watchers
         directory_watch_events.setdefault(path, default=asyncio.Event()).set()
 
-    def watch_and_upload_directory(logger, path, mask):
+    def watch_and_upload_directory(logger, path):
+        mask = WATCH_MASK
         watch_directory(path, mask)
 
         if PurePosixPath(path) not in [directory, directory / download_directory]:
@@ -483,7 +484,7 @@ def Syncer(
                 schedule_upload(logger, PurePosixPath(root) / file)
 
             for d in dirs:
-                watch_and_upload_directory(logger, PurePosixPath(root) / d, mask)
+                watch_and_upload_directory(logger, PurePosixPath(root) / d)
 
     def remote_delete_directory(logger, path):
         # Directory nesting not likely to be large
@@ -571,7 +572,7 @@ def Syncer(
         schedule_upload(logger, path)
 
     def handle__dir__IN_CREATE(logger, _, __, path):
-        watch_and_upload_directory(logger, path, WATCH_MASK)
+        watch_and_upload_directory(logger, path)
 
     def handle__file__IN_DELETE(logger, _, __, path):
         try:
@@ -620,7 +621,7 @@ def Syncer(
         schedule_delete(logger, path)
 
     def handle__dir__IN_MOVED_TO(logger, _, __, path):
-        watch_and_upload_directory(logger, path, WATCH_MASK)
+        watch_and_upload_directory(logger, path)
 
     def handle__file__IN_MOVED_TO(logger, _, cookie, path):
         bump_content_version(path)
