@@ -205,6 +205,7 @@ def Syncer(
         download_interval=10,
         exclude_remote=r'^$',
         exclude_local=r'^$',
+        upload_on_create=r'^$',
 ):
 
     loop = asyncio.get_running_loop()
@@ -213,6 +214,7 @@ def Syncer(
     directory = PurePosixPath(directory)
     exclude_remote = re.compile(exclude_remote)
     exclude_local = re.compile(exclude_local)
+    upload_on_create = re.compile(upload_on_create)
 
     # The file descriptor returned from inotify_init
     fd = None
@@ -569,6 +571,10 @@ def Syncer(
 
     def handle__file__IN_CLOSE_WRITE(logger, _, __, path):
         schedule_upload(logger, path)
+
+    def handle__file__IN_CREATE(logger, _, __, path):
+        if upload_on_create.match(str(path)):
+            schedule_upload(logger, path)
 
     def handle__dir__IN_CREATE(logger, _, __, path):
         watch_and_upload_directory(logger, path, WATCH_MASK)
@@ -1234,6 +1240,12 @@ def main():
         nargs='?',
         help='Regex of paths to not be uploaded')
     parser.add_argument(
+        '--upload-on-create',
+        metavar='upload-on-create',
+        default='^$',
+        nargs='?',
+        help='Regex of paths to upload as soon as they have been created')
+    parser.add_argument(
         '--disable-ssl-verification',
         metavar='',
         nargs='?', const=True, default=False)
@@ -1282,6 +1294,7 @@ def main():
         'region': parsed_args.region,
         'exclude_remote': parsed_args.exclude_remote,
         'exclude_local': parsed_args.exclude_local,
+        'upload_on_create': parsed_args.upload_on_create,
         'get_pool': lambda: Pool(**pool_args),
         'get_credentials':
             get_credentials_from_environment if creds_source == 'envrionment-variables' else
