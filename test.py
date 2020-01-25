@@ -813,6 +813,34 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_body(request, filename), b'some-bytes')
 
     @async_test
+    async def test_hard_linked_file_uploaded_if_matches_upload_on_create(self):
+        # This is to simulate how git creates pack files
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop = syncer_for('/s3-home-folder', upload_on_create=r'.*_link')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        os.link(f'/s3-home-folder/{filename}', f'/s3-home-folder/{filename}_link')
+        os.link(f'/s3-home-folder/{filename}', f'/s3-home-folder/{filename}_nomatchlink')
+        os.remove(f'/s3-home-folder/{filename}')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, f'{filename}_link'), b'some-bytes')
+        self.assertEqual(await object_code(request, f'{filename}_nomatchlink'), b'404')
+
+    @async_test
     async def test_directory_uploaded_after_start_then_manipulated(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
@@ -2147,7 +2175,8 @@ async def terminate(process):
 def syncer_for(path, prefix='',
                local_modification_persistance=120, download_interval=60,
                exclude_remote='^$',
-               exclude_local='^$',):
+               exclude_local='^$',
+               upload_on_create='^$',):
     return Syncer(
         path, 'https://minio:9000/my-bucket/', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
@@ -2156,6 +2185,7 @@ def syncer_for(path, prefix='',
         download_interval=download_interval,
         exclude_remote=exclude_remote,
         exclude_local=exclude_local,
+        upload_on_create=upload_on_create,
     )
 
 
