@@ -824,7 +824,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         await locked_request(
-            logger, b'PUT', path, prefix + str(path.relative_to(directory)), body=file_body,
+            logger, b'PUT', path, file_key_for_path(path), body=file_body,
             get_headers=lambda: (
                 (b'content-length', content_length),
                 (b'x-amz-meta-mtime', mtime),
@@ -845,7 +845,7 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        key = prefix + str(path.relative_to(directory))
+        key = file_key_for_path(path)
         await locked_request(
             logger, b'PUT', path, key,
             get_headers=lambda: (
@@ -867,7 +867,7 @@ def Syncer(
 
         await locked_request(
             logger, b'PUT', path,
-            prefix + str(path.relative_to(directory)) + '/',
+            dir_key_for_path(path),
             get_headers=lambda: (
                 (b'content-length', b'0'),
                 (b'x-amz-meta-mtime', mtime),
@@ -891,7 +891,7 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        await locked_request(logger, b'DELETE', path, prefix + str(path.relative_to(directory)))
+        await locked_request(logger, b'DELETE', path, file_key_for_path(path))
 
     async def delete_directory(logger, path):
         logger.info('Deleting directory %s', path)
@@ -899,8 +899,13 @@ def Syncer(
         if os.path.isdir(path):
             raise FileContentChanged(path)
 
-        await locked_request(logger, b'DELETE', path,
-                             prefix + str(path.relative_to(directory)) + '/')
+        await locked_request(logger, b'DELETE', path, dir_key_for_path(path))
+
+    def file_key_for_path(path):
+        return prefix + str(path.relative_to(directory))
+
+    def dir_key_for_path(path):
+        return prefix + str(path.relative_to(directory)) + '/'
 
     async def locked_request(logger, method, path, key, get_headers=lambda: (),
                              body=empty_async_iterator,
