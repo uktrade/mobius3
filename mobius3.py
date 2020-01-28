@@ -83,6 +83,7 @@ class Mutex(asyncio.Future):
 
 class InotifyEvents(enum.IntEnum):
     IN_MODIFY = 0x00000002
+    IN_ATTRIB = 0x00000004
     IN_CLOSE_WRITE = 0x00000008
     IN_MOVED_FROM = 0x00000040
     IN_MOVED_TO = 0x00000080
@@ -136,6 +137,7 @@ def get_resolver_logger_adapter_default(s3sync_extra):
 
 WATCH_MASK = \
     InotifyEvents.IN_MODIFY | \
+    InotifyEvents.IN_ATTRIB | \
     InotifyEvents.IN_CLOSE_WRITE | \
     InotifyEvents.IN_MOVED_FROM | \
     InotifyEvents.IN_MOVED_TO | \
@@ -570,6 +572,9 @@ def Syncer(
         logger.debug('Cookie: %s', cookie)
         download_cookies.add(cookie)
 
+    def handle__file__IN_ATTRIB(logger, _, __, path):
+        schedule_upload_meta(logger, path)
+
     def handle__file__IN_CLOSE_WRITE(logger, _, __, path):
         schedule_upload(logger, path)
 
@@ -644,6 +649,24 @@ def Syncer(
 
     def get_lock(path):
         return path_locks.setdefault(path, default=FifoLock())
+
+    def schedule_upload_meta(logger, path):
+        if exclude_local.match(str(path)):
+            logger.info('Excluding from upload: %s', path)
+            return
+
+        version_current = get_content_version(path)
+        version_original = version_current.copy()
+
+        async def function():
+            try:
+                await upload_meta(logger, path, version_current, version_original)
+            finally:
+                completed_push_local_change(path)
+
+        ensure_file_in_tree_cache(path)
+        upload_job_queue.put_nowait((logger, function))
+        queued_push_local_change(path)
 
     def schedule_upload(logger, path):
         if exclude_local.match(str(path)):
@@ -789,6 +812,7 @@ def Syncer(
 
         content_length = str(os.stat(path).st_size).encode()
         mtime = str(os.path.getmtime(path)).encode()
+        mode = str(os.stat(path).st_mode).encode()
 
         # Ensure we only progress if the content length hasn't changed since
         # we have queued the upload
@@ -796,15 +820,39 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        headers = await locked_request(
+        def on_done(headers):
+            etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
+            etags[path] = etag
+
+        await locked_request(
             logger, b'PUT', path, body=file_body,
             headers=(
                 (b'content-length', content_length),
                 (b'x-amz-meta-mtime', mtime),
+                (b'x-amz-meta-mode', mode),
+            ),
+            on_done=on_done,
+        )
+
+    async def upload_meta(logger, path, content_version_current, content_version_original):
+        logger.info('Uploading meta %s', path)
+
+        mtime = str(os.path.getmtime(path)).encode()
+        mode = str(os.stat(path).st_mode).encode()
+
+        # Ensure we only progress if the content hasn't changed since we have
+        # queued the upload
+        await flush_events(logger, path)
+        if content_version_current != content_version_original:
+            raise FileContentChanged(path)
+
+        await locked_request_meta(
+            logger, b'PUT', path,
+            headers=(
+                (b'x-amz-meta-mtime', mtime),
+                (b'x-amz-meta-mode', mode),
             ),
         )
-        etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
-        etags[path] = etag
 
     async def upload_directory(logger, path):
         logger.info('Uploading directory %s', path)
@@ -814,14 +862,17 @@ def Syncer(
         if not os.path.isdir(path):
             raise FileContentChanged(path)
 
-        headers = await locked_request_dir(
+        def on_done(headers):
+            etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
+            etags[path] = etag
+
+        await locked_request_dir(
             logger, b'PUT', path, headers=(
                 (b'content-length', b'0'),
                 (b'x-amz-meta-mtime', mtime),
             ),
+            on_done=on_done,
         )
-        etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
-        etags[path] = etag
 
     async def delete(logger, path, content_version_current, content_version_original):
         logger.info('Deleting %s', path)
@@ -849,35 +900,66 @@ def Syncer(
 
         await locked_request_dir(logger, b'DELETE', path)
 
-    async def locked_request(logger, method, path, headers=(), body=empty_async_iterator):
+    async def locked_request(logger, method, path, headers=(), body=empty_async_iterator,
+                             on_done=lambda headers: None):
         remote_url = bucket_url + prefix + str(path.relative_to(directory))
 
-        async with get_lock(path)(Mutex):
+        # Keep a reference to the lock to keep it in the WeakValueDictionary
+        lock = get_lock(path)
+        async with lock(Mutex):
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
                 logger, method, remote_url, headers=headers, body=body)
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
-        if code not in [b'200', b'204']:
-            raise Exception(code, body_bytes)
+            if code not in [b'200', b'204']:
+                raise Exception(code, body_bytes)
 
-        return headers
+            on_done(headers)
 
-    async def locked_request_dir(logger, method, path, headers=(), body=empty_async_iterator):
+    async def locked_request_meta(logger, method, path, headers=(),
+                                  on_done=lambda headers: None):
+        key = prefix + str(path.relative_to(directory))
+        remote_url = bucket_url + key
+
+        # Keep a reference to the lock to keep it in the WeakValueDictionary
+        lock = get_lock(path)
+        async with lock(Mutex):
+            headers_with_source = headers + (
+                (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
+                (b'x-amz-metadata-directive', b'REPLACE'),
+                (b'x-amz-copy-source-if-match', etags[path].encode()),
+            )
+
+            logger.debug('%s %s %s', method.decode(), remote_url, headers_with_source)
+            code, headers, body = await signed_request(
+                logger, method, remote_url, headers=headers_with_source)
+            logger.debug('%s %s', code, headers)
+            body_bytes = await buffered(body)
+
+            if code not in [b'200', b'204']:
+                raise Exception(code, body_bytes)
+
+            on_done(headers)
+
+    async def locked_request_dir(logger, method, path, headers=(), body=empty_async_iterator,
+                                 on_done=lambda headers: None):
         remote_url = bucket_url + prefix + str(path.relative_to(directory)) + '/'
 
-        async with get_lock(path)(Mutex):
+        # Keep a reference to the lock to keep it in the WeakValueDictionary
+        lock = get_lock(path)
+        async with lock(Mutex):
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
                 logger, method, remote_url, headers=headers, body=body)
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
-        if code not in [b'200', b'204']:
-            raise Exception(code, body_bytes)
+            if code not in [b'200', b'204']:
+                raise Exception(code, body_bytes)
 
-        return headers
+            on_done(headers)
 
     async def download_manager(logger):
         while True:
