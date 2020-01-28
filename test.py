@@ -338,7 +338,7 @@ class TestIntegration(unittest.TestCase):
         dirname_3 = str(uuid.uuid4())
 
         start, stop = Syncer(
-            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
         )
         self.add_async_cleanup(stop)
 
@@ -411,7 +411,7 @@ class TestIntegration(unittest.TestCase):
         dirname_3 = str(uuid.uuid4())
 
         start, stop = Syncer(
-            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
             prefix='prefix/'
         )
         self.add_async_cleanup(stop)
@@ -487,7 +487,7 @@ class TestIntegration(unittest.TestCase):
         dirname_2 = str(uuid.uuid4())
 
         start, stop = Syncer(
-            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
         )
         self.add_async_cleanup(stop)
 
@@ -570,7 +570,7 @@ class TestIntegration(unittest.TestCase):
         }
 
         start, stop = Syncer(
-            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
             local_modification_persistance=1,
             download_interval=1,
         )
@@ -645,7 +645,7 @@ class TestIntegration(unittest.TestCase):
         }
 
         start, stop = Syncer(
-            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
             local_modification_persistance=1,
             download_interval=1,
         )
@@ -851,7 +851,7 @@ class TestIntegration(unittest.TestCase):
         dirname_4 = str(uuid.uuid4())
 
         start, stop = Syncer(
-            '/s3-home-folder', 'http://localhost:8080/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
         )
         self.add_async_cleanup(stop)
 
@@ -1954,7 +1954,7 @@ class TestEndToEnd(unittest.TestCase):
         await install_mobius3.wait()
 
         mobius3_process = await asyncio.create_subprocess_exec(
-            'mobius3', '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            'mobius3', '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -1988,7 +1988,7 @@ class TestEndToEnd(unittest.TestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
-            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             '--credentials-source', 'ecs-container-endpoint',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
@@ -2015,7 +2015,7 @@ class TestEndToEnd(unittest.TestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
-            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -2044,7 +2044,7 @@ class TestEndToEnd(unittest.TestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
-            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -2075,7 +2075,7 @@ class TestEndToEnd(unittest.TestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
-            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -2106,7 +2106,7 @@ class TestEndToEnd(unittest.TestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
-            '/s3-home-folder', f'https://minio:9000/my-bucket/', 'us-east-1',
+            '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--prefix', 'my-folder/',
             '--disable-ssl-verification', '--disable-0x20-dns-encoding',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
@@ -2178,7 +2178,7 @@ def syncer_for(path, prefix='',
                exclude_local='^$',
                upload_on_create='^$',):
     return Syncer(
-        path, 'https://minio:9000/my-bucket/', 'us-east-1',
+        path, 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
         prefix=prefix,
         local_modification_persistance=local_modification_persistance,

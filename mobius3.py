@@ -188,7 +188,7 @@ def get_credentials_from_ecs_endpoint():
 
 
 def Syncer(
-        directory, bucket, region,
+        directory, bucket, endpoint, region,
         prefix='',
         concurrent_uploads=5,
         concurrent_downloads=5,
@@ -215,6 +215,7 @@ def Syncer(
     exclude_remote = re.compile(exclude_remote)
     exclude_local = re.compile(exclude_local)
     upload_on_create = re.compile(upload_on_create)
+    bucket_url = endpoint.format(bucket)
 
     # The file descriptor returned from inotify_init
     fd = None
@@ -849,7 +850,7 @@ def Syncer(
         await locked_request_dir(logger, b'DELETE', path)
 
     async def locked_request(logger, method, path, headers=(), body=empty_async_iterator):
-        remote_url = bucket + prefix + str(path.relative_to(directory))
+        remote_url = bucket_url + prefix + str(path.relative_to(directory))
 
         async with get_lock(path)(Mutex):
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
@@ -864,7 +865,7 @@ def Syncer(
         return headers
 
     async def locked_request_dir(logger, method, path, headers=(), body=empty_async_iterator):
-        remote_url = bucket + prefix + str(path.relative_to(directory)) + '/'
+        remote_url = bucket_url + prefix + str(path.relative_to(directory)) + '/'
 
         async with get_lock(path)(Mutex):
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
@@ -924,7 +925,8 @@ def Syncer(
                 # Since walking the filesystem can take time we might have a new file that we have
                 # recently uploaded that was not present when we request the original file list.
                 path = full_path.relative_to(directory)
-                code, _, body = await signed_request(logger, b'HEAD', bucket + prefix + str(path))
+                code, _, body = await signed_request(
+                    logger, b'HEAD', bucket_url + prefix + str(path))
                 await buffered(body)
                 if code != b'404':
                     continue
@@ -962,7 +964,7 @@ def Syncer(
 
                 path = full_path.relative_to(directory)
                 code, _, body = await signed_request(
-                    logger, b'HEAD', bucket + prefix + str(path) + '/')
+                    logger, b'HEAD', bucket_url + prefix + str(path) + '/')
                 await buffered(body)
                 if code != b'404':
                     continue
@@ -992,7 +994,7 @@ def Syncer(
 
             logger.info('Downloading: %s', full_path)
 
-            code, headers, body = await signed_request(logger, b'GET', bucket + prefix + path)
+            code, headers, body = await signed_request(logger, b'GET', bucket_url + prefix + path)
             if code != b'200':
                 await buffered(body)  # Fetch all bytes and return to pool
                 raise Exception(code)
@@ -1037,6 +1039,11 @@ def Syncer(
                     headers_dict[b'last-modified'].decode(),
                     '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
+            try:
+                mode = int(headers_dict[b'x-amz-meta-mode'])
+            except (KeyError, ValueError):
+                mode = None
+
             if is_directory:
                 await buffered(body)
 
@@ -1060,6 +1067,9 @@ def Syncer(
                 # May raise a FileNotFoundError if the directory no longer
                 # exists, but handled at higher level
                 os.utime(temporary_path, (modified, modified))
+
+                if mode is not None:
+                    os.chmod(temporary_path, mode)
 
                 # If we don't wait for the directory watched, then if
                 # - a directory has just been created above
@@ -1100,7 +1110,7 @@ def Syncer(
                 ('list-type', '2'),
                 ('prefix', prefix),
             ) + extra_query_items
-            code, _, body = await signed_request(logger, b'GET', bucket, params=query)
+            code, _, body = await signed_request(logger, b'GET', bucket_url, params=query)
             body_bytes = await buffered(body)
             if code != b'200':
                 raise Exception(code, body_bytes)
@@ -1208,6 +1218,11 @@ def main():
         help='URL to the remote bucket, with a trailing slash\n'
              'e.g. https://s3-eu-west-2.amazonaws.com/my-bucket-name/')
     parser.add_argument(
+        'endpoint',
+        metavar='endpoint',
+        help='Pattern which is filled with the bucket name\n'
+             'e.g. https://s3-eu-west-2.amazonaws.com/{}/')
+    parser.add_argument(
         'region',
         metavar='region',
         help='The region of the bucket\ne.g. eu-west-2')
@@ -1290,6 +1305,7 @@ def main():
     syncer_args = {
         'directory': parsed_args.directory,
         'bucket': parsed_args.bucket,
+        'endpoint': parsed_args.endpoint,
         'prefix': parsed_args.prefix,
         'region': parsed_args.region,
         'exclude_remote': parsed_args.exclude_remote,
