@@ -281,6 +281,9 @@ def Syncer(
     # if the etag matches
     etags = {}
 
+    # Don't re-upload metadata if we think S3 already has it
+    meta = {}
+
     # A cache of the file tree is maintained. Used for directory renames: we
     # only get notified of renames _after_ they have happened, we need a way
     # to know what objects are on S3 in order to DELETE them
@@ -414,6 +417,8 @@ def Syncer(
 
     def start_inotify(logger):
         nonlocal wds_to_path
+        nonlocal meta
+        nonlocal etags
         nonlocal tree_cache_root
         nonlocal fd
         nonlocal ignore_next_delete
@@ -421,6 +426,8 @@ def Syncer(
         ignore_next_delete = {}
         ignore_next_directory_upload = {}
         wds_to_path = {}
+        meta = {}
+        etags = {}
         tree_cache_root = {
             'type': 'directory',
             'children': {},
@@ -591,6 +598,11 @@ def Syncer(
     def handle__file__IN_DELETE(logger, _, __, path):
         try:
             del etags[path]
+        except KeyError:
+            pass
+
+        try:
+            del meta[path]
         except KeyError:
             pass
 
@@ -823,14 +835,21 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
+        data = (
+            (b'x-amz-meta-mtime', mtime),
+            (b'x-amz-meta-mode', mode),
+        )
+
+        def set_etag_and_meta(path, headers):
+            meta[path] = data
+            set_etag(path, headers)
+
         await locked_request(
             logger, b'PUT', path, file_key_for_path(path), body=file_body,
             get_headers=lambda: (
                 (b'content-length', content_length),
-                (b'x-amz-meta-mtime', mtime),
-                (b'x-amz-meta-mode', mode),
-            ),
-            on_done=set_etag,
+            ) + data,
+            on_done=set_etag_and_meta,
         )
 
     async def upload_meta(logger, path, content_version_current, content_version_original):
@@ -845,16 +864,24 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
+        data = (
+            (b'x-amz-meta-mtime', mtime),
+            (b'x-amz-meta-mode', mode),
+        )
+
+        def set_meta(path, _):
+            meta[path] = data
+
         key = file_key_for_path(path)
         await locked_request(
             logger, b'PUT', path, key,
-            get_headers=lambda: (
-                (b'x-amz-meta-mtime', mtime),
-                (b'x-amz-meta-mode', mode),
+            cont=lambda: meta[path] != data,
+            get_headers=lambda: data + (
                 (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
                 (b'x-amz-metadata-directive', b'REPLACE'),
                 (b'x-amz-copy-source-if-match', etags[path].encode()),
             ),
+            on_done=set_meta,
         )
 
     async def upload_directory(logger, path):
@@ -906,12 +933,15 @@ def Syncer(
     def dir_key_for_path(path):
         return prefix + str(path.relative_to(directory)) + '/'
 
-    async def locked_request(logger, method, path, key, get_headers=lambda: (),
+    async def locked_request(logger, method, path, key, cont=lambda: True,
+                             get_headers=lambda: (),
                              body=empty_async_iterator,
                              on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
+            if not cont():
+                return
             remote_url = bucket_url + key
             headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
