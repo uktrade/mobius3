@@ -821,8 +821,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         def on_done(headers):
-            etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
-            etags[path] = etag
+            etags[path] = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
 
         await locked_request(
             logger, b'PUT', path, body=file_body,
@@ -863,8 +862,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         def on_done(headers):
-            etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
-            etags[path] = etag
+            etags[path] = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
 
         await locked_request_dir(
             logger, b'PUT', path, headers=(
