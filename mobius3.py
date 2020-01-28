@@ -846,7 +846,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         key = prefix + str(path.relative_to(directory))
-        await locked_request_meta(
+        await locked_request(
             logger, b'PUT', path, key,
             get_headers=lambda: (
                 (b'x-amz-meta-mtime', mtime),
@@ -865,7 +865,7 @@ def Syncer(
         if not os.path.isdir(path):
             raise FileContentChanged(path)
 
-        await locked_request_dir(
+        await locked_request(
             logger, b'PUT', path,
             prefix + str(path.relative_to(directory)) + '/',
             get_headers=lambda: (
@@ -899,8 +899,8 @@ def Syncer(
         if os.path.isdir(path):
             raise FileContentChanged(path)
 
-        await locked_request_dir(logger, b'DELETE', path,
-                                 prefix + str(path.relative_to(directory)) + '/')
+        await locked_request(logger, b'DELETE', path,
+                             prefix + str(path.relative_to(directory)) + '/')
 
     async def locked_request(logger, method, path, key, get_headers=lambda: (),
                              body=empty_async_iterator,
@@ -913,43 +913,6 @@ def Syncer(
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
                 logger, method, remote_url, headers=get_headers(), body=body)
-            logger.debug('%s %s', code, headers)
-            body_bytes = await buffered(body)
-
-            if code not in [b'200', b'204']:
-                raise Exception(code, body_bytes)
-
-            on_done(path, headers)
-
-    async def locked_request_meta(logger, method, path, key, get_headers=lambda: (),
-                                  on_done=lambda path, headers: None):
-        # Keep a reference to the lock to keep it in the WeakValueDictionary
-        lock = get_lock(path)
-        async with lock(Mutex):
-            remote_url = bucket_url + key
-            headers = get_headers()
-            logger.debug('%s %s %s', method.decode(), remote_url, headers)
-            code, headers, body = await signed_request(
-                logger, method, remote_url, headers=headers)
-            logger.debug('%s %s', code, headers)
-            body_bytes = await buffered(body)
-
-            if code not in [b'200', b'204']:
-                raise Exception(code, body_bytes)
-
-            on_done(path, headers)
-
-    async def locked_request_dir(logger, method, path, key, get_headers=lambda: (),
-                                 body=empty_async_iterator,
-                                 on_done=lambda path, headers: None):
-        # Keep a reference to the lock to keep it in the WeakValueDictionary
-        lock = get_lock(path)
-        async with lock(Mutex):
-            remote_url = bucket_url + key
-            headers = get_headers()
-            logger.debug('%s %s %s', method.decode(), remote_url, headers)
-            code, headers, body = await signed_request(
-                logger, method, remote_url, headers=headers, body=body)
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
