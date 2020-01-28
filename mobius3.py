@@ -357,6 +357,9 @@ def Syncer(
             directory = directory['children'][parent.name]
         return directory['children'][path.name]
 
+    def set_etag(path, headers):
+        etags[path] = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
+
     def queued_push_local_change(path):
         push_queued[path] += 1
 
@@ -820,18 +823,14 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        def on_done(headers):
-            etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
-            etags[path] = etag
-
         await locked_request(
-            logger, b'PUT', path, body=file_body,
-            headers=(
+            logger, b'PUT', path, file_key_for_path(path), body=file_body,
+            get_headers=lambda: (
                 (b'content-length', content_length),
                 (b'x-amz-meta-mtime', mtime),
                 (b'x-amz-meta-mode', mode),
             ),
-            on_done=on_done,
+            on_done=set_etag,
         )
 
     async def upload_meta(logger, path, content_version_current, content_version_original):
@@ -846,11 +845,15 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        await locked_request_meta(
-            logger, b'PUT', path,
-            headers=(
+        key = file_key_for_path(path)
+        await locked_request(
+            logger, b'PUT', path, key,
+            get_headers=lambda: (
                 (b'x-amz-meta-mtime', mtime),
                 (b'x-amz-meta-mode', mode),
+                (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
+                (b'x-amz-metadata-directive', b'REPLACE'),
+                (b'x-amz-copy-source-if-match', etags[path].encode()),
             ),
         )
 
@@ -862,16 +865,13 @@ def Syncer(
         if not os.path.isdir(path):
             raise FileContentChanged(path)
 
-        def on_done(headers):
-            etag = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
-            etags[path] = etag
-
-        await locked_request_dir(
-            logger, b'PUT', path, headers=(
+        await locked_request(
+            logger, b'PUT', path, dir_key_for_path(path),
+            get_headers=lambda: (
                 (b'content-length', b'0'),
                 (b'x-amz-meta-mtime', mtime),
             ),
-            on_done=on_done,
+            on_done=set_etag,
         )
 
     async def delete(logger, path, content_version_current, content_version_original):
@@ -890,7 +890,7 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        await locked_request(logger, b'DELETE', path)
+        await locked_request(logger, b'DELETE', path, file_key_for_path(path))
 
     async def delete_directory(logger, path):
         logger.info('Deleting directory %s', path)
@@ -898,68 +898,32 @@ def Syncer(
         if os.path.isdir(path):
             raise FileContentChanged(path)
 
-        await locked_request_dir(logger, b'DELETE', path)
+        await locked_request(logger, b'DELETE', path, dir_key_for_path(path))
 
-    async def locked_request(logger, method, path, headers=(), body=empty_async_iterator,
-                             on_done=lambda headers: None):
-        remote_url = bucket_url + prefix + str(path.relative_to(directory))
+    def file_key_for_path(path):
+        return prefix + str(path.relative_to(directory))
 
+    def dir_key_for_path(path):
+        return prefix + str(path.relative_to(directory)) + '/'
+
+    async def locked_request(logger, method, path, key, get_headers=lambda: (),
+                             body=empty_async_iterator,
+                             on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
+            remote_url = bucket_url + key
+            headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
-                logger, method, remote_url, headers=headers, body=body)
+                logger, method, remote_url, headers=get_headers(), body=body)
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
             if code not in [b'200', b'204']:
                 raise Exception(code, body_bytes)
 
-            on_done(headers)
-
-    async def locked_request_meta(logger, method, path, headers=(),
-                                  on_done=lambda headers: None):
-        key = prefix + str(path.relative_to(directory))
-        remote_url = bucket_url + key
-
-        # Keep a reference to the lock to keep it in the WeakValueDictionary
-        lock = get_lock(path)
-        async with lock(Mutex):
-            headers_with_source = headers + (
-                (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
-                (b'x-amz-metadata-directive', b'REPLACE'),
-                (b'x-amz-copy-source-if-match', etags[path].encode()),
-            )
-
-            logger.debug('%s %s %s', method.decode(), remote_url, headers_with_source)
-            code, headers, body = await signed_request(
-                logger, method, remote_url, headers=headers_with_source)
-            logger.debug('%s %s', code, headers)
-            body_bytes = await buffered(body)
-
-            if code not in [b'200', b'204']:
-                raise Exception(code, body_bytes)
-
-            on_done(headers)
-
-    async def locked_request_dir(logger, method, path, headers=(), body=empty_async_iterator,
-                                 on_done=lambda headers: None):
-        remote_url = bucket_url + prefix + str(path.relative_to(directory)) + '/'
-
-        # Keep a reference to the lock to keep it in the WeakValueDictionary
-        lock = get_lock(path)
-        async with lock(Mutex):
-            logger.debug('%s %s %s', method.decode(), remote_url, headers)
-            code, headers, body = await signed_request(
-                logger, method, remote_url, headers=headers, body=body)
-            logger.debug('%s %s', code, headers)
-            body_bytes = await buffered(body)
-
-            if code not in [b'200', b'204']:
-                raise Exception(code, body_bytes)
-
-            on_done(headers)
+            on_done(path, headers)
 
     async def download_manager(logger):
         while True:
