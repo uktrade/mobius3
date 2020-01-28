@@ -414,6 +414,7 @@ def Syncer(
 
     def start_inotify(logger):
         nonlocal wds_to_path
+        nonlocal etags
         nonlocal tree_cache_root
         nonlocal fd
         nonlocal ignore_next_delete
@@ -421,6 +422,7 @@ def Syncer(
         ignore_next_delete = {}
         ignore_next_directory_upload = {}
         wds_to_path = {}
+        etags = {}
         tree_cache_root = {
             'type': 'directory',
             'children': {},
