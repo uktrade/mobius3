@@ -845,11 +845,15 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
+        key = prefix + str(path.relative_to(directory))
         await locked_request_meta(
-            logger, b'PUT', path, prefix + str(path.relative_to(directory)),
+            logger, b'PUT', path, key,
             get_headers=lambda: (
                 (b'x-amz-meta-mtime', mtime),
                 (b'x-amz-meta-mode', mode),
+                (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
+                (b'x-amz-metadata-directive', b'REPLACE'),
+                (b'x-amz-copy-source-if-match', etags[path].encode()),
             ),
         )
 
@@ -923,15 +927,10 @@ def Syncer(
         lock = get_lock(path)
         async with lock(Mutex):
             remote_url = bucket_url + key
-            headers_with_source = get_headers() + (
-                (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
-                (b'x-amz-metadata-directive', b'REPLACE'),
-                (b'x-amz-copy-source-if-match', etags[path].encode()),
-            )
-
-            logger.debug('%s %s %s', method.decode(), remote_url, headers_with_source)
+            headers = get_headers()
+            logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
-                logger, method, remote_url, headers=headers_with_source)
+                logger, method, remote_url, headers=headers)
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
