@@ -866,8 +866,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         await locked_request(
-            logger, b'PUT', path,
-            dir_key_for_path(path),
+            logger, b'PUT', path, dir_key_for_path(path),
             get_headers=lambda: (
                 (b'content-length', b'0'),
                 (b'x-amz-meta-mtime', mtime),
