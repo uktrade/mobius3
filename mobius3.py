@@ -902,11 +902,10 @@ def Syncer(
 
     async def locked_request(logger, method, path, headers=(), body=empty_async_iterator,
                              on_done=lambda headers: None):
-        remote_url = bucket_url + prefix + str(path.relative_to(directory))
-
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
+            remote_url = bucket_url + prefix + str(path.relative_to(directory))
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
                 logger, method, remote_url, headers=headers, body=body)
@@ -920,12 +919,11 @@ def Syncer(
 
     async def locked_request_meta(logger, method, path, headers=(),
                                   on_done=lambda headers: None):
-        key = prefix + str(path.relative_to(directory))
-        remote_url = bucket_url + key
-
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
+            key = prefix + str(path.relative_to(directory))
+            remote_url = bucket_url + key
             headers_with_source = headers + (
                 (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
                 (b'x-amz-metadata-directive', b'REPLACE'),
@@ -945,11 +943,10 @@ def Syncer(
 
     async def locked_request_dir(logger, method, path, headers=(), body=empty_async_iterator,
                                  on_done=lambda headers: None):
-        remote_url = bucket_url + prefix + str(path.relative_to(directory)) + '/'
-
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
+            remote_url = bucket_url + prefix + str(path.relative_to(directory)) + '/'
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
                 logger, method, remote_url, headers=headers, body=body)
