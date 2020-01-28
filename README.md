@@ -26,7 +26,7 @@ pip install mobius3
 mobius3 can be used a standalone command-line application
 
 ```bash
-mobius3 /local/folder https://remote-bucket.s3-eu-west-2.amazonaws.com/ eu-west-2 --prefix folder/
+mobius3 /local/folder remote-bucket https://{}.s3-eu-west-2.amazonaws.com/ eu-west-2 --prefix folder/
 ```
 
 or from Docker
@@ -39,7 +39,8 @@ docker run --rm -it \
     quay.io/uktrade/mobius3:v0.0.28 \
     mobius3 \
         /home/mobius3/data \
-        https://remote-bucket.s3-eu-west-2.amazonaws.com/ \
+        remote-bucket \
+        https://{}.s3-eu-west-2.amazonaws.com/ \
         eu-west-2 \
         --prefix my-prefix/
 ```
@@ -49,7 +50,7 @@ or from asyncio Python
 ```python
 from mobius3 import Syncer
 
-start, stop = Syncer('/local/folder', 'https://remote-bucket.s3-eu-west-2.amazonaws.com/', 'eu-west-2', prefix='folder/')
+start, stop = Syncer('/local/folder', 'remote-bucket', 'https://{}.s3-eu-west-2.amazonaws.com/', 'eu-west-2', prefix='folder/')
 
 # Will copy the contents of the bucket to the local folder,
 # raise exceptions on error, and then continue to sync in the background
@@ -66,7 +67,8 @@ In the cases above AWS credentials are taken from the `AWS_ACCESS_KEY_ID` and `A
     "command": [
         "mobius3",
         "/home/mobius3/data",
-        "https://remote-bucket.s3-eu-west-2.amazonaws.com/",
+        "remote-bucket",
+        "https://{}.s3-eu-west-2.amazonaws.com/",
         "eu-west-2",
         "--prefix", "my-prefix/"
         "--credentials-source", "ecs-container-endpoint"
