@@ -357,6 +357,9 @@ def Syncer(
             directory = directory['children'][parent.name]
         return directory['children'][path.name]
 
+    def set_etag(path, headers):
+        etags[path] = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
+
     def queued_push_local_change(path):
         push_queued[path] += 1
 
@@ -820,9 +823,6 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        def on_done(headers):
-            etags[path] = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
-
         await locked_request(
             logger, b'PUT', path, body=file_body,
             headers=(
@@ -830,7 +830,7 @@ def Syncer(
                 (b'x-amz-meta-mtime', mtime),
                 (b'x-amz-meta-mode', mode),
             ),
-            on_done=on_done,
+            on_done=set_etag,
         )
 
     async def upload_meta(logger, path, content_version_current, content_version_original):
@@ -861,15 +861,12 @@ def Syncer(
         if not os.path.isdir(path):
             raise FileContentChanged(path)
 
-        def on_done(headers):
-            etags[path] = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
-
         await locked_request_dir(
             logger, b'PUT', path, headers=(
                 (b'content-length', b'0'),
                 (b'x-amz-meta-mtime', mtime),
             ),
-            on_done=on_done,
+            on_done=set_etag,
         )
 
     async def delete(logger, path, content_version_current, content_version_original):
@@ -899,7 +896,7 @@ def Syncer(
         await locked_request_dir(logger, b'DELETE', path)
 
     async def locked_request(logger, method, path, headers=(), body=empty_async_iterator,
-                             on_done=lambda headers: None):
+                             on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
@@ -913,10 +910,10 @@ def Syncer(
             if code not in [b'200', b'204']:
                 raise Exception(code, body_bytes)
 
-            on_done(headers)
+            on_done(path, headers)
 
     async def locked_request_meta(logger, method, path, headers=(),
-                                  on_done=lambda headers: None):
+                                  on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
@@ -937,10 +934,10 @@ def Syncer(
             if code not in [b'200', b'204']:
                 raise Exception(code, body_bytes)
 
-            on_done(headers)
+            on_done(path, headers)
 
     async def locked_request_dir(logger, method, path, headers=(), body=empty_async_iterator,
-                                 on_done=lambda headers: None):
+                                 on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
@@ -954,7 +951,7 @@ def Syncer(
             if code not in [b'200', b'204']:
                 raise Exception(code, body_bytes)
 
-            on_done(headers)
+            on_done(path, headers)
 
     async def download_manager(logger):
         while True:
