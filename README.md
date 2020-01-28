@@ -36,7 +36,7 @@ docker run --rm -it \
     -v /local/folder:/home/mobius3/data \
     -e AWS_ACCESS_KEY_ID \
     -e AWS_SECRET_ACCESS_KEY \
-    quay.io/uktrade/mobius3:v0.0.28 \
+    quay.io/uktrade/mobius3:v0.0.29 \
     mobius3 \
         /home/mobius3/data \
         remote-bucket \
