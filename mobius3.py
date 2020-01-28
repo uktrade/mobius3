@@ -824,7 +824,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         await locked_request(
-            logger, b'PUT', path, str(path.relative_to(directory)), body=file_body,
+            logger, b'PUT', path, prefix + str(path.relative_to(directory)), body=file_body,
             get_headers=lambda: (
                 (b'content-length', content_length),
                 (b'x-amz-meta-mtime', mtime),
@@ -846,7 +846,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         await locked_request_meta(
-            logger, b'PUT', path, str(path.relative_to(directory)),
+            logger, b'PUT', path, prefix + str(path.relative_to(directory)),
             get_headers=lambda: (
                 (b'x-amz-meta-mtime', mtime),
                 (b'x-amz-meta-mode', mode),
@@ -862,7 +862,9 @@ def Syncer(
             raise FileContentChanged(path)
 
         await locked_request_dir(
-            logger, b'PUT', path, str(path.relative_to(directory)) + '/', get_headers=lambda: (
+            logger, b'PUT', path,
+            prefix + str(path.relative_to(directory)) + '/',
+            get_headers=lambda: (
                 (b'content-length', b'0'),
                 (b'x-amz-meta-mtime', mtime),
             ),
@@ -885,7 +887,7 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        await locked_request(logger, b'DELETE', path, str(path.relative_to(directory)))
+        await locked_request(logger, b'DELETE', path, prefix + str(path.relative_to(directory)))
 
     async def delete_directory(logger, path):
         logger.info('Deleting directory %s', path)
@@ -893,15 +895,16 @@ def Syncer(
         if os.path.isdir(path):
             raise FileContentChanged(path)
 
-        await locked_request_dir(logger, b'DELETE', path, str(path.relative_to(directory)) + '/')
+        await locked_request_dir(logger, b'DELETE', path,
+                                 prefix + str(path.relative_to(directory)) + '/')
 
-    async def locked_request(logger, method, path, key_suffix, get_headers=lambda: (),
+    async def locked_request(logger, method, path, key, get_headers=lambda: (),
                              body=empty_async_iterator,
                              on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
-            remote_url = bucket_url + prefix + key_suffix
+            remote_url = bucket_url + key
             headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
@@ -914,12 +917,11 @@ def Syncer(
 
             on_done(path, headers)
 
-    async def locked_request_meta(logger, method, path, key_suffix, get_headers=lambda: (),
+    async def locked_request_meta(logger, method, path, key, get_headers=lambda: (),
                                   on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
-            key = prefix + key_suffix
             remote_url = bucket_url + key
             headers_with_source = get_headers() + (
                 (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
@@ -938,13 +940,13 @@ def Syncer(
 
             on_done(path, headers)
 
-    async def locked_request_dir(logger, method, path, key_suffix, get_headers=lambda: (),
+    async def locked_request_dir(logger, method, path, key, get_headers=lambda: (),
                                  body=empty_async_iterator,
                                  on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
-            remote_url = bucket_url + prefix + key_suffix
+            remote_url = bucket_url + key
             headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
