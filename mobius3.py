@@ -825,7 +825,7 @@ def Syncer(
 
         await locked_request(
             logger, b'PUT', path, body=file_body,
-            headers=(
+            get_headers=lambda: (
                 (b'content-length', content_length),
                 (b'x-amz-meta-mtime', mtime),
                 (b'x-amz-meta-mode', mode),
@@ -847,7 +847,7 @@ def Syncer(
 
         await locked_request_meta(
             logger, b'PUT', path,
-            headers=(
+            get_headers=lambda: (
                 (b'x-amz-meta-mtime', mtime),
                 (b'x-amz-meta-mode', mode),
             ),
@@ -862,7 +862,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         await locked_request_dir(
-            logger, b'PUT', path, headers=(
+            logger, b'PUT', path, get_headers=lambda: (
                 (b'content-length', b'0'),
                 (b'x-amz-meta-mtime', mtime),
             ),
@@ -895,15 +895,17 @@ def Syncer(
 
         await locked_request_dir(logger, b'DELETE', path)
 
-    async def locked_request(logger, method, path, headers=(), body=empty_async_iterator,
+    async def locked_request(logger, method, path, get_headers=lambda: (),
+                             body=empty_async_iterator,
                              on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
             remote_url = bucket_url + prefix + str(path.relative_to(directory))
+            headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
-                logger, method, remote_url, headers=headers, body=body)
+                logger, method, remote_url, headers=get_headers(), body=body)
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
@@ -912,14 +914,14 @@ def Syncer(
 
             on_done(path, headers)
 
-    async def locked_request_meta(logger, method, path, headers=(),
+    async def locked_request_meta(logger, method, path, get_headers=lambda: (),
                                   on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
             key = prefix + str(path.relative_to(directory))
             remote_url = bucket_url + key
-            headers_with_source = headers + (
+            headers_with_source = get_headers() + (
                 (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
                 (b'x-amz-metadata-directive', b'REPLACE'),
                 (b'x-amz-copy-source-if-match', etags[path].encode()),
@@ -936,12 +938,14 @@ def Syncer(
 
             on_done(path, headers)
 
-    async def locked_request_dir(logger, method, path, headers=(), body=empty_async_iterator,
+    async def locked_request_dir(logger, method, path, get_headers=lambda: (),
+                                 body=empty_async_iterator,
                                  on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
         async with lock(Mutex):
             remote_url = bucket_url + prefix + str(path.relative_to(directory)) + '/'
+            headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
                 logger, method, remote_url, headers=headers, body=body)
