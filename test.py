@@ -1154,6 +1154,59 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(mode, 0o100600)
 
     @async_test
+    async def test_file_download_then_upload_preserves_mode(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        filename = str(uuid.uuid4())
+        code, _, body = await put_body(request, filename, b'some-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        start, stop_a = syncer_for('/s3-home-folder')
+        stopped = False
+
+        async def stop_once():
+            nonlocal stopped
+            if stopped:
+                return
+            stopped = True
+            await stop_a()
+        self.add_async_cleanup(stop_once)
+        await start()
+
+        # filename = str(uuid.uuid4())
+        # with open(f'/s3-home-folder/{filename}', 'wb') as file:
+        #     file.write(b'some-bytes')
+
+        await asyncio.sleep(1)
+
+        os.chmod(f'/s3-home-folder/{filename}', 0o100600)
+
+        await stop_once()
+        await delete_dir()
+
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        await asyncio.sleep(1)
+
+        start, stop_b = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop_b)
+        await start()
+
+        await asyncio.sleep(1)
+
+        mode = os.stat(f'/s3-home-folder/{filename}').st_mode
+
+        self.assertEqual(mode, 0o100600)
+
+    @async_test
     async def test_single_small_file_uploaded_emoji(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)

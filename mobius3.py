@@ -1167,6 +1167,11 @@ def Syncer(
 
                 os.replace(temporary_path, full_path)
 
+                meta[full_path] = (
+                    (b'x-amz-meta-mtime', modified),
+                    (b'x-amz-meta-mode', mode),
+                )
+
                 # Ensure that once we move the file into place, subsequent
                 # renames will attempt to move the file
                 ensure_file_in_tree_cache(full_path)
