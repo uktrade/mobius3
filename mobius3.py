@@ -875,7 +875,7 @@ def Syncer(
         key = file_key_for_path(path)
         await locked_request(
             logger, b'PUT', path, key,
-            cont=lambda: meta[path] != data,
+            cont=lambda: (path not in meta) or (meta[path] != data),
             get_headers=lambda: data + (
                 (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
                 (b'x-amz-metadata-directive', b'REPLACE'),
