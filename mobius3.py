@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import ssl
 import sys
@@ -398,7 +397,10 @@ def Syncer(
         nonlocal upload_tasks
         nonlocal download_tasks
         nonlocal download_manager_task
-        os.mkdir(directory / download_directory)
+        try:
+            os.mkdir(directory / download_directory)
+        except FileExistsError:
+            pass
         upload_tasks = [
             asyncio.create_task(process_jobs(upload_job_queue))
             for i in range(0, concurrent_uploads)
@@ -458,7 +460,6 @@ def Syncer(
             task.cancel()
         await close_pool()
         await asyncio.sleep(0)
-        shutil.rmtree(directory / download_directory)
         logger.info('Finished stopping')
 
     def stop_inotify():
@@ -717,6 +718,10 @@ def Syncer(
         queued_push_local_change(path)
 
     def schedule_delete(logger, path):
+        if exclude_local.match(str(path)):
+            logger.info('Excluding from delete: %s', path)
+            return
+
         version_current = get_content_version(path)
         version_original = version_current.copy()
 
@@ -734,6 +739,10 @@ def Syncer(
         queued_push_local_change(path)
 
     def schedule_delete_directory(logger, path):
+        if exclude_local.match(str(path)):
+            logger.info('Excluding from delete: %s', path)
+            return
+
         async def function():
             try:
                 await delete_directory(logger, path)

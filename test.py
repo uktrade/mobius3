@@ -2076,6 +2076,138 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(await object_body(request, filename_2), b'more-bytes')
 
+    @async_test
+    async def test_multiple_syncers_on_same_folder(self):
+        self.add_async_cleanup(create_directory('/s3-home-folder'))
+        self.add_async_cleanup(create_directory('/test-data/my-bucket'))
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        # We have to exclude the mobius flush files otherwise we end up in an infinite loop
+        # where each syncer responds to the creation/deletion of the other's flush files
+        start_1, stop_1 = syncer_for(
+            '/s3-home-folder', exclude_local=r'.*(/|^)\.__mobius3_flush__.*')
+        self.add_async_cleanup(stop_1)
+        await start_1()
+
+        start_2, stop_2 = syncer_for(
+            '/s3-home-folder', exclude_local=r'.*(/|^)\.__mobius3_flush__.*')
+        self.add_async_cleanup(stop_2)
+        await start_2()
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, f'{filename}'), b'some-bytes')
+
+    @async_test
+    async def test_multiple_syncers_on_nfs(self):
+        # We could have mobius3 running on two different volumes, which are linked via some
+        # mechanism unknown to inotify, such as NFS. The main relevant bebaviour of NFS is that
+        # remote changes don't trigger inotify events, but the files/changes are there if looked
+        # for. This is tricky to simulate in a test: we do the best we can by having a docker
+        # volume mounted in two places, running mobius3 on each and ignoring any events on files
+        # known to be created by the other
+
+        exclude_local_1 = r'(.*(/|^)\.__mobius3_flush__.*)|(.*from_2.*)'
+        exclude_local_2 = r'(.*(/|^)\.__mobius3_flush__.*)|(.*from_1.*)'
+
+        #####
+
+        # Meta test to make sure that the creation in one folder does not trigger an upload in the
+        # other. We do this by having the linked folders sync to two separate buckets, and checking
+        # that an upload to one does _not trigger an upload to the other
+
+        self.add_async_cleanup(create_directory('/nfs-1/s3-home-folder'))
+        self.add_async_cleanup(create_directory('/test-data/my-bucket-1'))
+
+        start_1, stop_1 = syncer_for('/nfs-1/s3-home-folder',
+                                     bucket='my-bucket-1',
+                                     exclude_local=exclude_local_1,
+                                     )
+        self.add_async_cleanup(stop_1)
+        await start_1()
+
+        self.add_async_cleanup(create_directory('/test-data/my-bucket-2'))
+
+        start_2, stop_2 = syncer_for('/nfs-2/s3-home-folder',
+                                     bucket='my-bucket-2',
+                                     exclude_local=exclude_local_2,
+                                     )
+        self.add_async_cleanup(stop_2)
+        await start_2()
+
+        filename_1 = 'from_1_' + str(uuid.uuid4())
+        with open(f'/nfs-1/s3-home-folder/{filename_1}', 'wb') as file:
+            file.write(b'some-bs')
+
+        # Check that the folders _are_ linked
+        with open(f'/nfs-2/s3-home-folder/{filename_1}', 'rb') as file:
+            contents = file.read()
+        self.assertEqual(contents, b'some-bs')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename_1, bucket='my-bucket-1'), b'some-bs')
+        self.assertEqual(await object_code(request, filename_1, bucket='my-bucket-2'), b'404')
+
+        #####
+
+        # Ensure that even after polling S3, there is no change of mtime, and something horrible
+        # like the file disappearing hasn't happened
+
+        self.add_async_cleanup(create_directory('/test-data/my-bucket'))
+
+        start_1, stop_1 = syncer_for('/nfs-1/s3-home-folder',
+                                     exclude_local=exclude_local_1,
+                                     local_modification_persistance=1, download_interval=1,
+                                     )
+        self.add_async_cleanup(stop_1)
+        await start_1()
+
+        start_2, stop_2 = syncer_for('/nfs-2/s3-home-folder',
+                                     exclude_local=exclude_local_2,
+                                     local_modification_persistance=1, download_interval=1,
+                                     )
+        self.add_async_cleanup(stop_2)
+        await start_2()
+
+        filename_1 = 'from_1_' + str(uuid.uuid4())
+        with open(f'/nfs-1/s3-home-folder/{filename_1}', 'wb') as file:
+            file.write(b'some-bytes')
+        mtime = os.path.getmtime(f'/nfs-1/s3-home-folder/{filename_1}')
+
+        await await_upload()
+
+        self.assertEqual(await object_body(request, filename_1), b'some-bytes')
+
+        await asyncio.sleep(2)
+
+        self.assertEqual(mtime, os.path.getmtime(f'/nfs-1/s3-home-folder/{filename_1}'))
+        self.assertEqual(mtime, os.path.getmtime(f'/nfs-2/s3-home-folder/{filename_1}'))
+
+        #####
+
+        # Ensure that deleting a file works as expected
+
+        os.unlink(f'/nfs-1/s3-home-folder/{filename_1}')
+
+        await await_upload()
+
+        self.assertEqual(await object_code(request, filename_1), b'404')
+
+        await asyncio.sleep(2)
+
+        self.assertFalse(os.path.exists(f'/nfs-1/s3-home-folder/{filename_1}'))
+        self.assertFalse(os.path.exists(f'/nfs-2/s3-home-folder/{filename_1}'))
+
 
 class TestEndToEnd(unittest.TestCase):
 
@@ -2313,13 +2445,13 @@ async def terminate(process):
         await process.wait()
 
 
-def syncer_for(path, prefix='',
+def syncer_for(path, bucket='my-bucket', prefix='',
                local_modification_persistance=120, download_interval=60,
                exclude_remote='^$',
                exclude_local='^$',
                upload_on_create='^$',):
     return Syncer(
-        path, 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
+        path, bucket, 'https://minio:9000/{}/', 'us-east-1',
         get_pool=get_docker_link_and_minio_compatible_http_pool,
         prefix=prefix,
         local_modification_persistance=local_modification_persistance,
@@ -2334,14 +2466,14 @@ async def await_upload():
     await asyncio.sleep(1)
 
 
-async def object_body(request, key):
-    _, _, body = await object_triple(request, key)
+async def object_body(request, key, bucket='my-bucket'):
+    _, _, body = await object_triple(request, key, bucket=bucket)
     body_bytes = await buffered(body)
     return body_bytes
 
 
-async def object_code(request, key):
-    code, _, body = await object_triple(request, key)
+async def object_code(request, key, bucket='my-bucket'):
+    code, _, body = await object_triple(request, key, bucket=bucket)
     await buffered(body)
     return code
 
@@ -2350,12 +2482,12 @@ async def get_credentials_from_environment():
     return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
 
 
-async def object_triple(request, key):
+async def object_triple(request, key, bucket='my-bucket'):
     signed_request = signed(
         request, credentials=get_credentials_from_environment,
         service='s3', region='us-east-1',
     )
-    return await signed_request(b'GET', f'https://minio:9000/my-bucket/{key}')
+    return await signed_request(b'GET', f'https://minio:9000/{bucket}/{key}')
 
 
 async def delete_object(request, key):
