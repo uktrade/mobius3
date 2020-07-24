@@ -13,6 +13,12 @@ services:
       - type: volume
         source: minio-buckets
         target: /test-data
+      - type: volume
+        source: simulate-nfs
+        target: /nfs-1
+      - type: volume
+        source: simulate-nfs
+        target: /nfs-2
     networks:
       ecs_emulation:
         ipv4_address: '169.254.170.3'
@@ -52,6 +58,7 @@ services:
         ipv4_address: '169.254.170.2'
 volumes:
   minio-buckets:
+  simulate-nfs:
 
 networks:
   ecs_emulation:
