@@ -2058,6 +2058,8 @@ class TestIntegration(unittest.TestCase):
         start, stop = syncer_for('/s3-home-folder')
         await start()
 
+        await await_upload()
+
         filename_1 = str(uuid.uuid4())
         filename_2 = str(uuid.uuid4())
 
@@ -2081,10 +2083,6 @@ class TestIntegration(unittest.TestCase):
         self.add_async_cleanup(create_directory('/s3-home-folder'))
         self.add_async_cleanup(create_directory('/test-data/my-bucket'))
 
-        filename = str(uuid.uuid4())
-        with open(f'/s3-home-folder/{filename}', 'wb') as file:
-            file.write(b'some-bytes')
-
         # We have to exclude the mobius flush files otherwise we end up in an infinite loop
         # where each syncer responds to the creation/deletion of the other's flush files
         start_1, stop_1 = syncer_for(
@@ -2096,6 +2094,10 @@ class TestIntegration(unittest.TestCase):
             '/s3-home-folder', exclude_local=r'.*(/|^)\.__mobius3_flush__.*')
         self.add_async_cleanup(stop_2)
         await start_2()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
 
         await await_upload()
 
@@ -2233,6 +2235,8 @@ class TestEndToEnd(unittest.TestCase):
         )
         self.add_async_cleanup(terminate, mobius3_process)
 
+        await await_upload()
+
         filename = str(uuid.uuid4())
         with open(f'/s3-home-folder/{filename}', 'wb') as file:
             file.write(b'some-bytes')
@@ -2268,6 +2272,8 @@ class TestEndToEnd(unittest.TestCase):
         )
         self.add_async_cleanup(terminate, mobius3_process)
 
+        await await_upload()
+
         filename = str(uuid.uuid4())
         with open(f'/s3-home-folder/{filename}', 'wb') as file:
             file.write(b'some-bytes')
@@ -2278,6 +2284,33 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(await object_body(request, filename), b'some-bytes')
 
         await await_upload()
+
+    @async_test
+    async def test_direct_script_no_upload_existing(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-original-bytes')
+
+        mobius3_process = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'mobius3',
+            '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
+            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            env=os.environ, stdout=asyncio.subprocess.PIPE,
+        )
+        self.add_async_cleanup(terminate, mobius3_process)
+
+        await await_upload()
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_code(request, filename), b'404')
 
     @async_test
     async def test_direct_script_delay(self):
@@ -2293,6 +2326,8 @@ class TestEndToEnd(unittest.TestCase):
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
         self.add_async_cleanup(terminate, mobius3_process)
+
+        await await_upload()
 
         filename = str(uuid.uuid4())
         with open(f'/s3-home-folder/{filename}', 'wb') as file:
