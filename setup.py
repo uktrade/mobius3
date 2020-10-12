@@ -8,7 +8,7 @@ def long_description():
 
 setuptools.setup(
     name='mobius3',
-    version='0.0.33',
+    version='0.0.34',
     author='Department for International Trade',
     author_email='webops@digital.trade.gov.uk',
     description='Continuously and asynchronously sync a local folder to an S3 bucket',
