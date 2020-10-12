@@ -612,6 +612,71 @@ class TestIntegration(unittest.TestCase):
         self.assertFalse(os.path.exists(f'/s3-home-folder/{dirname_1}'))
 
     @async_test
+    async def test_delete_existing_file_after_initial_download(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        # This _should_ end up deleted, but not until we've saved the remote
+        # files locally
+        filename_local = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename_local}', 'wb') as file:
+            file.write(b'some-local-bytes')
+
+        # Ensure the file has not been modified within local_modification_persistance
+        await asyncio.sleep(1)
+
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            local_modification_persistance=1,
+        )
+        self.add_async_cleanup(stop)
+
+        filename_remote = str(uuid.uuid4())
+
+        async def handle_list(_):
+            return web.Response(status=200, body=f'''<?xml version="1.0" encoding="UTF-8"?>
+                <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                    <Contents>
+                        <Key>{filename_remote}</Key>
+                        <ETag>&quot;fba9dede5f27731c9771645a39863328&quot;</ETag>
+                    </Contents>
+                </ListBucketResult>'''.encode()
+                                )
+
+        async def handle_file(_):
+            await asyncio.sleep(7)
+            return web.Response(status=200, headers={
+                'last-modified': 'Fri, 10 May 2019 06:53:17 GMT',
+                'etag': '"fba9dede5f27731c9771645a39863328"',
+            }, body=b'some-remote-bytes')
+
+        app = web.Application()
+        app.add_routes([
+            web.get(f'/my-bucket/', handle_list),
+            web.get(f'/my-bucket/{filename_remote}', handle_file),
+        ])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self.add_async_cleanup(runner.cleanup)
+        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        await site.start()
+
+        asyncio.create_task(start())
+
+        # We have a slow initial download, during which the existing file
+        # that will eventually be deleted, should remain...
+        for _ in range(0, 4):
+            self.assertTrue(os.path.exists(f'/s3-home-folder/{filename_local}'))
+            self.assertFalse(os.path.exists(f'/s3-home-folder/{filename_remote}'))
+            await asyncio.sleep(1)
+
+        await asyncio.sleep(4)
+
+        # And then after the download, the existing file should be deleted
+        self.assertFalse(os.path.exists(f'/s3-home-folder/{filename_local}'))
+        self.assertTrue(os.path.exists(f'/s3-home-folder/{filename_remote}'))
+
+    @async_test
     async def test_nested_delete_downloaded_directory(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)

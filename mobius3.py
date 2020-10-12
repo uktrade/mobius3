@@ -411,7 +411,6 @@ def Syncer(
         ]
         start_inotify(logger, upload=False)
         await list_and_schedule_downloads(logger)
-        await download_job_queue.join()
         download_manager_task = asyncio.create_task(
             download_manager(get_logger_adapter({'mobius3_component': 'download'}))
         )
@@ -974,7 +973,6 @@ def Syncer(
                 raise
             except Exception:
                 logger.exception('Failed to list files')
-            await download_job_queue.join()
             await asyncio.sleep(download_interval)
 
     async def list_and_schedule_downloads(logger):
@@ -996,6 +994,8 @@ def Syncer(
 
             logger.info('Scheduling download: %s', path)
             schedule_download(logger, path)
+
+        await download_job_queue.join()
 
         full_paths = set(directory / path for path, _ in path_etags)
         for root, dirs, files in os.walk(directory, topdown=False):
