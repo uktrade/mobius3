@@ -409,15 +409,14 @@ def Syncer(
             asyncio.create_task(process_jobs(download_job_queue))
             for i in range(0, concurrent_downloads)
         ]
-        start_inotify(logger)
+        start_inotify(logger, upload=False)
         await list_and_schedule_downloads(logger)
-        await download_job_queue.join()
         download_manager_task = asyncio.create_task(
             download_manager(get_logger_adapter({'mobius3_component': 'download'}))
         )
         logger.info('Finished starting')
 
-    def start_inotify(logger):
+    def start_inotify(logger, upload):
         nonlocal wds_to_path
         nonlocal meta
         nonlocal etags
@@ -442,7 +441,7 @@ def Syncer(
 
         loop.add_reader(fd, _read_events)
         watch_directory(download_directory, DOWNLOAD_WATCH_MASK)
-        watch_and_upload_directory(logger, directory, WATCH_MASK)
+        watch_directory_recursive(logger, directory, WATCH_MASK, upload)
 
     async def stop():
         # Make every effort to read all incoming events and finish the queue
@@ -479,27 +478,30 @@ def Syncer(
         # Notify any waiting watchers
         directory_watch_events.setdefault(path, default=asyncio.Event()).set()
 
-    def watch_and_upload_directory(logger, path, mask):
+    def watch_directory_recursive(logger, path, mask, upload):
+        logger.info('Watching directory: %s, with upload: %s', path, upload)
         watch_directory(path, mask)
 
         if PurePosixPath(path) not in [directory, directory / download_directory]:
             try:
                 del ignore_next_directory_upload[path]
             except KeyError:
-                logger.info('Scheduling upload directory: %s', path)
-                schedule_upload_directory(logger, path)
+                if upload:
+                    logger.info('Scheduling upload directory: %s', path)
+                    schedule_upload_directory(logger, path)
 
         # By the time we've added a watcher, files or subdirectories may have
         # already been created
         for root, dirs, files in os.walk(path):
             if PurePosixPath(root) == directory / download_directory:
                 continue
-            for file in files:
-                logger.info('Scheduling upload: %s', PurePosixPath(root) / file)
-                schedule_upload(logger, PurePosixPath(root) / file)
+            if upload:
+                for file in files:
+                    logger.info('Scheduling upload: %s', PurePosixPath(root) / file)
+                    schedule_upload(logger, PurePosixPath(root) / file)
 
             for d in dirs:
-                watch_and_upload_directory(logger, PurePosixPath(root) / d, mask)
+                watch_directory_recursive(logger, PurePosixPath(root) / d, mask, upload)
 
     def remote_delete_directory(logger, path):
         # Directory nesting not likely to be large
@@ -572,7 +574,7 @@ def Syncer(
     def handle__overflow__IN_Q_OVERFLOW(logger, _, __, ___):
         logger.warning('IN_Q_OVERFLOW. Restarting')
         stop_inotify()
-        start_inotify(logger)
+        start_inotify(logger, upload=True)
 
     def handle__flush__IN_CREATE(logger, _, __, path):
         flush = flushes[path]
@@ -594,7 +596,7 @@ def Syncer(
             schedule_upload(logger, path)
 
     def handle__dir__IN_CREATE(logger, _, __, path):
-        watch_and_upload_directory(logger, path, WATCH_MASK)
+        watch_directory_recursive(logger, path, WATCH_MASK, upload=True)
 
     def handle__file__IN_DELETE(logger, _, __, path):
         try:
@@ -648,7 +650,7 @@ def Syncer(
         schedule_delete(logger, path)
 
     def handle__dir__IN_MOVED_TO(logger, _, __, path):
-        watch_and_upload_directory(logger, path, WATCH_MASK)
+        watch_directory_recursive(logger, path, WATCH_MASK, upload=True)
 
     def handle__file__IN_MOVED_TO(logger, _, cookie, path):
         bump_content_version(path)
@@ -972,7 +974,6 @@ def Syncer(
                 raise
             except Exception:
                 logger.exception('Failed to list files')
-            await download_job_queue.join()
             await asyncio.sleep(download_interval)
 
     async def list_and_schedule_downloads(logger):
@@ -994,6 +995,8 @@ def Syncer(
 
             logger.info('Scheduling download: %s', path)
             schedule_download(logger, path)
+
+        await download_job_queue.join()
 
         full_paths = set(directory / path for path, _ in path_etags)
         for root, dirs, files in os.walk(directory, topdown=False):
