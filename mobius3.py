@@ -479,6 +479,7 @@ def Syncer(
         directory_watch_events.setdefault(path, default=asyncio.Event()).set()
 
     def watch_directory_recursive(logger, path, mask, upload):
+        logger.info('Watching directory: %s, with upload: %s', path, upload)
         watch_directory(path, mask)
 
         if PurePosixPath(path) not in [directory, directory / download_directory]:
