@@ -15,11 +15,13 @@ import os
 import re
 import signal
 import ssl
+import stat
 import sys
 import uuid
 import urllib.parse
 from pathlib import (
     PurePosixPath,
+    PosixPath
 )
 import struct
 from weakref import (
@@ -388,6 +390,14 @@ def Syncer(
             except FileNotFoundError:
                 return False
 
+        if os.path.islink(path):
+            # Resolve throws an RuntimeError if a Symlink loop is found, catch it here
+            # and return False to prevent modified_recently from throwing an exception
+            # when it tries to get the modified time of a Symlink loop
+            try:
+                PosixPath(path).resolve()
+            except RuntimeError:
+                return False
         return path in push_queued or path in push_completed or modified_recently()
 
     async def start():
@@ -592,8 +602,16 @@ def Syncer(
         schedule_upload(logger, path)
 
     def handle__file__IN_CREATE(logger, _, __, path):
-        if upload_on_create.match(str(path)):
-            schedule_upload(logger, path)
+        if os.path.islink(path):
+            try:
+                PosixPath(path).resolve()
+            except RuntimeError as exception:
+                logger.info('Exception resolving Symlink path: %s' % exception)
+                return
+            else:
+                schedule_upload(logger, path, os.readlink(path))
+        elif upload_on_create.match(str(path)):
+            schedule_upload(logger, path, None)
 
     def handle__dir__IN_CREATE(logger, _, __, path):
         watch_directory_recursive(logger, path, WATCH_MASK, upload=True)
@@ -686,7 +704,7 @@ def Syncer(
         upload_job_queue.put_nowait((logger, function))
         queued_push_local_change(path)
 
-    def schedule_upload(logger, path):
+    def schedule_upload(logger, path, points_to=None):
         if exclude_local.match(str(path)):
             logger.info('Excluding from upload: %s', path)
             return
@@ -696,7 +714,7 @@ def Syncer(
 
         async def function():
             try:
-                await upload(logger, path, version_current, version_original)
+                await upload(logger, path, version_current, version_original, points_to)
             finally:
                 completed_push_local_change(path)
 
@@ -809,7 +827,7 @@ def Syncer(
         with timeout(loop, directory_watch_timeout):
             await event.wait()
 
-    async def upload(logger, path, content_version_current, content_version_original):
+    async def upload(logger, path, content_version_current, content_version_original, points_to=None):
         logger.info('Uploading %s', path)
 
         def with_is_last(iterable):
@@ -836,9 +854,34 @@ def Syncer(
 
                     yield chunk
 
-        content_length = str(os.stat(path).st_size).encode()
-        mtime = str(os.path.getmtime(path)).encode()
-        mode = str(os.stat(path).st_mode).encode()
+        content_length = str(os.stat(path).st_size if points_to is None else 0).encode()
+
+        if points_to is None:
+            mtime = str(os.path.getmtime(path)).encode()
+        else:
+            # A symlink can point to a non existent file and because os.path.getmtime
+            # attempts to get the modified time of the underlying file, this needs to be
+            # handled and defaulted to the current time
+            try:
+                mtime = str(os.path.getmtime(path)).encode()
+            except FileNotFoundError:
+                mtime = str(datetime.datetime.now().timestamp()).encode()
+
+        if points_to is None:
+            mode = str(os.stat(path).st_mode).encode()
+        else:
+            # A symlink can point to a non existent file and because os.stat.st_mode
+            # attempts to get the permissions of the underlying file, this needs to be
+            # handled and defaulted to "-rw-r--r--"
+            try:
+                mode = str(os.stat(path).st_mode).encode()
+            except FileNotFoundError:
+                mode = str(
+                    stat.S_IFREG |
+                    stat.S_IRUSR | stat.S_IWUSR |
+                    stat.S_IRGRP |
+                    stat.S_IROTH
+                ).encode()
 
         # Ensure we only progress if the content length hasn't changed since
         # we have queued the upload
@@ -850,13 +893,17 @@ def Syncer(
             (b'x-amz-meta-mtime', mtime),
             (b'x-amz-meta-mode', mode),
         )
+        if points_to is not None:
+            data += (
+                (b'x-amz-meta-link', str(points_to).encode()),
+            )
 
         def set_etag_and_meta(path, headers):
             meta[path] = data
             set_etag(path, headers)
 
         await locked_request(
-            logger, b'PUT', path, file_key_for_path(path), body=file_body,
+            logger, b'PUT', path, file_key_for_path(path), body=file_body if points_to is None else empty_async_iterator,
             get_headers=lambda: (
                 (b'content-length', content_length),
             ) + data,
@@ -1132,6 +1179,11 @@ def Syncer(
             except (KeyError, ValueError):
                 mode = None
 
+            try:
+                points_to = str(headers_dict[b'x-amz-meta-link'].decode())
+            except (KeyError, ValueError):
+                points_to = None
+
             if is_directory:
                 await buffered(body)
 
@@ -1148,15 +1200,26 @@ def Syncer(
 
             temporary_path = directory / download_directory / uuid.uuid4().hex
             try:
-                with open(temporary_path, 'wb') as file:
-                    async for chunk in body:
-                        file.write(chunk)
+                if points_to is None:
+                    with open(temporary_path, 'wb') as file:
+                        async for chunk in body:
+                            file.write(chunk)
+                else:
+                    await buffered(body)
+                    os.symlink(points_to, temporary_path)
 
                 # May raise a FileNotFoundError if the directory no longer
-                # exists, but handled at higher level
-                os.utime(temporary_path, (modified, modified))
+                # exists, but handled at higher level.
+                # This is skipped when the file being downloaded is a symlink because it
+                # will fail if the symlink is processed before the file it points to exists.
+                if points_to is None:
+                    os.utime(temporary_path, (modified, modified))
 
-                if mode is not None:
+                # This is skipped when the file being downloaded is a symlink because it
+                # will fail if the symlink is processed before the file it points to exists.
+                # Permissions on symlinks in UNIX are always 777 anyway as it defers to
+                # the permissions of the underlying file
+                if mode is not None and points_to is None:
                     os.chmod(temporary_path, mode)
 
                 # If we don't wait for the directory watched, then if
