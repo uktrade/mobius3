@@ -942,6 +942,8 @@ class TestIntegration(unittest.TestCase):
         os.symlink('/s3-home-folder/bad_file', '/s3-home-folder/bad_file_link')
         # Symlink to non existent directory
         os.symlink('/s3-home-folder/bad_dir', '/s3-home-folder/bad_dir_link')
+        # Symlink loop
+        os.symlink('/s3-home-folder/loop_link', '/s3-home-folder/loop_link')
 
         await asyncio.sleep(1)
 
@@ -955,6 +957,7 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_body(request, 'file_in_symlinked_dir_link'), b'')
         self.assertEqual(await object_body(request, 'bad_file_link'), b'')
         self.assertEqual(await object_body(request, 'bad_dir_link'), b'')
+        self.assertEqual(await object_body(request, 'loop_link'), b'')
 
     @async_test
     async def test_symlinks_are_preserved(self):
@@ -978,8 +981,8 @@ class TestIntegration(unittest.TestCase):
         filename = str(uuid.uuid4())
         with open(f'/s3-home-folder/{filename}', 'wb') as file:
             file.write(b'some-bytes')
-
         os.symlink(f'/s3-home-folder/{filename}', f'/s3-home-folder/{filename}_link')
+        mtime_1 = os.path.getmtime(f'/s3-home-folder/{filename}_link')
 
         await await_upload()
 
@@ -999,12 +1002,13 @@ class TestIntegration(unittest.TestCase):
 
         with open(f'/s3-home-folder/{filename}_link', 'rb') as file:
             body_bytes = file.read()
-        self.assertEqual(body_bytes, b'some-bytes')
-
-        self.assertTrue(os.path.islink(f'/s3-home-folder/{filename}_link'))
-
         points_to = os.readlink(f'/s3-home-folder/{filename}_link')
+        mtime_2 = os.path.getmtime(f'/s3-home-folder/{filename}_link')
+
+        self.assertEqual(body_bytes, b'some-bytes')
+        self.assertTrue(os.path.islink(f'/s3-home-folder/{filename}_link'))
         self.assertEqual(points_to, f'/s3-home-folder/{filename}')
+        self.assertEqual(mtime_1, mtime_2)
 
     @async_test
     async def test_directory_uploaded_after_start_then_manipulated(self):
