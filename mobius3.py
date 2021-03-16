@@ -15,6 +15,7 @@ import os
 import re
 import signal
 import ssl
+import stat
 import sys
 import uuid
 import urllib.parse
@@ -836,10 +837,17 @@ def Syncer(
 
                     yield chunk
 
+        async def symlink_points_to():
+            yield os.readlink(path).encode('utf-8')
+
         is_symlink = os.path.islink(path)
-        if is_symlink:
-            symlink_points_to = os.readlink(path)
-        content_length = str(os.stat(path).st_size if not is_symlink else 0).encode()
+
+        if not is_symlink:
+            body = file_body
+            content_length = str(os.stat(path).st_size).encode()
+        else:
+            body = symlink_points_to
+            content_length = str(len(os.readlink(path).encode('utf-8'))).encode()
 
         mtime = str(os.lstat(path).st_mtime).encode()
         mode = str(os.lstat(path).st_mode).encode()
@@ -854,17 +862,13 @@ def Syncer(
             (b'x-amz-meta-mtime', mtime),
             (b'x-amz-meta-mode', mode),
         )
-        if is_symlink:
-            data += (
-                (b'x-amz-meta-link', str(symlink_points_to).encode()),
-            )
 
         def set_etag_and_meta(path, headers):
             meta[path] = data
             set_etag(path, headers)
 
         await locked_request(
-            logger, b'PUT', path, file_key_for_path(path), body=file_body if not is_symlink else empty_async_iterator,
+            logger, b'PUT', path, file_key_for_path(path), body=body,
             get_headers=lambda: (
                 (b'content-length', content_length),
             ) + data,
@@ -1140,10 +1144,7 @@ def Syncer(
             except (KeyError, ValueError):
                 mode = None
 
-            try:
-                symlink_points_to = str(headers_dict[b'x-amz-meta-link'].decode())
-            except (KeyError, ValueError):
-                symlink_points_to = None
+            is_symlink = mode and stat.S_ISLNK(mode)
 
             if is_directory:
                 await buffered(body)
@@ -1161,12 +1162,12 @@ def Syncer(
 
             temporary_path = directory / download_directory / uuid.uuid4().hex
             try:
-                if symlink_points_to is None:
+                if not is_symlink:
                     with open(temporary_path, 'wb') as file:
                         async for chunk in body:
                             file.write(chunk)
                 else:
-                    await buffered(body)
+                    symlink_points_to = await buffered(body)
                     os.symlink(symlink_points_to, temporary_path)
 
                 # May raise a FileNotFoundError if the directory no longer
@@ -1175,9 +1176,9 @@ def Syncer(
 
                 # This is skipped when the file being downloaded is a symlink because it
                 # will fail if the symlink is processed before the file it points to exists.
-                # Permissions on symlinks in UNIX are always 777 anyway as it defers to
+                # Permissions on symlinks in Linux are always 777 anyway as it defers to
                 # the permissions of the underlying file
-                if mode is not None and symlink_points_to is None:
+                if mode is not None and not is_symlink:
                     os.chmod(temporary_path, mode)
 
                 # If we don't wait for the directory watched, then if

@@ -944,20 +944,23 @@ class TestIntegration(unittest.TestCase):
         os.symlink('/s3-home-folder/bad_dir', '/s3-home-folder/bad_dir_link')
         # Symlink loop
         os.symlink('/s3-home-folder/loop_link', '/s3-home-folder/loop_link')
+        # Symlink to unicode filename
+        os.symlink('/s3-home-folder/🍰', '/s3-home-folder/cake_link')
 
         await asyncio.sleep(1)
 
         request, close = get_docker_link_and_minio_compatible_http_pool()
         self.add_async_cleanup(close)
 
-        self.assertEqual(await object_body(request, 'file_link'), b'')
-        self.assertEqual(await object_body(request, 'dir_link'), b'')
-        self.assertEqual(await object_body(request, 'file_in_dir_link'), b'')
-        self.assertEqual(await object_body(request, 'symlinked_dir_link'), b'')
-        self.assertEqual(await object_body(request, 'file_in_symlinked_dir_link'), b'')
-        self.assertEqual(await object_body(request, 'bad_file_link'), b'')
-        self.assertEqual(await object_body(request, 'bad_dir_link'), b'')
-        self.assertEqual(await object_body(request, 'loop_link'), b'')
+        self.assertEqual(await object_body(request, 'file_link'), f'/s3-home-folder/{filename}'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'dir_link'), f'/s3-home-folder/{dir_name}'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'file_in_dir_link'), f'/s3-home-folder/{dir_name}/{filename_2}'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'symlinked_dir_link'), '/s3-home-folder/dir_link'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'file_in_symlinked_dir_link'), f'/s3-home-folder/symlinked_dir_link/{filename_2}'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'bad_file_link'), '/s3-home-folder/bad_file'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'bad_dir_link'), '/s3-home-folder/bad_dir'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'loop_link'), '/s3-home-folder/loop_link'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'cake_link'), '/s3-home-folder/🍰'.encode('utf-8'))
 
     @async_test
     async def test_symlinks_are_preserved(self):
