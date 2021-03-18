@@ -32,11 +32,12 @@ mobius3 /local/folder remote-bucket https://{}.s3-eu-west-2.amazonaws.com/ eu-we
 or from Docker
 
 ```bash
+docker build -t mobius:latest .
 docker run --rm -it \
     -v /local/folder:/home/mobius3/data \
     -e AWS_ACCESS_KEY_ID \
     -e AWS_SECRET_ACCESS_KEY \
-    quay.io/uktrade/mobius3:v0.0.34 \
+    mobius:latest
     mobius3 \
         /home/mobius3/data \
         remote-bucket \
