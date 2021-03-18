@@ -905,6 +905,114 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(await object_body(request, f'{filename}_link'), b'some-bytes')
         self.assertEqual(await object_code(request, f'{filename}_nomatchlink'), b'404')
 
+
+    @async_test
+    async def test_symlinks_uploaded_on_create(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4())
+        filename_2 = str(uuid.uuid4())
+        dir_name = str(uuid.uuid4())
+
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+        os.mkdir(f'/s3-home-folder/{dir_name}')
+        with open(f'/s3-home-folder/{dir_name}/{filename_2}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        # Symlink to existing file
+        os.symlink(f'/s3-home-folder/{filename}', '/s3-home-folder/file_link')
+        # Symlink to existing directory
+        os.symlink(f'/s3-home-folder/{dir_name}', '/s3-home-folder/dir_link')
+        # Symlink to file in directory
+        os.symlink(f'/s3-home-folder/{dir_name}/{filename_2}', '/s3-home-folder/file_in_dir_link')
+        # Symlink to symlinked directory
+        os.symlink('/s3-home-folder/dir_link', '/s3-home-folder/symlinked_dir_link')
+        # Symlink to file in symlinked directory
+        os.symlink(f'/s3-home-folder/symlinked_dir_link/{filename_2}', '/s3-home-folder/file_in_symlinked_dir_link')
+
+        # Symlink to non existent file
+        os.symlink('/s3-home-folder/bad_file', '/s3-home-folder/bad_file_link')
+        # Symlink to non existent directory
+        os.symlink('/s3-home-folder/bad_dir', '/s3-home-folder/bad_dir_link')
+        # Symlink loop
+        os.symlink('/s3-home-folder/loop_link', '/s3-home-folder/loop_link')
+        # Symlink to unicode filename
+        os.symlink('/s3-home-folder/🍰', '/s3-home-folder/cake_link')
+
+        await asyncio.sleep(1)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, 'file_link'), f'/s3-home-folder/{filename}'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'dir_link'), f'/s3-home-folder/{dir_name}'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'file_in_dir_link'), f'/s3-home-folder/{dir_name}/{filename_2}'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'symlinked_dir_link'), '/s3-home-folder/dir_link'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'file_in_symlinked_dir_link'), f'/s3-home-folder/symlinked_dir_link/{filename_2}'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'bad_file_link'), '/s3-home-folder/bad_file'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'bad_dir_link'), '/s3-home-folder/bad_dir'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'loop_link'), '/s3-home-folder/loop_link'.encode('utf-8'))
+        self.assertEqual(await object_body(request, 'cake_link'), '/s3-home-folder/🍰'.encode('utf-8'))
+
+    @async_test
+    async def test_symlinks_are_preserved(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop_a = syncer_for('/s3-home-folder')
+        stopped = False
+
+        async def stop_once():
+            nonlocal stopped
+            if stopped:
+                return
+            stopped = True
+            await stop_a()
+        self.add_async_cleanup(stop_once)
+        await start()
+
+        filename = str(uuid.uuid4())
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+        os.symlink(f'/s3-home-folder/{filename}', f'/s3-home-folder/{filename}_link')
+        mtime_1 = os.path.getmtime(f'/s3-home-folder/{filename}_link')
+
+        await await_upload()
+
+        await stop_once()
+        await delete_dir()
+
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+
+        await asyncio.sleep(1)
+
+        start, stop_b = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop_b)
+        await start()
+
+        await asyncio.sleep(1)
+
+        with open(f'/s3-home-folder/{filename}_link', 'rb') as file:
+            body_bytes = file.read()
+        points_to = os.readlink(f'/s3-home-folder/{filename}_link')
+        mtime_2 = os.path.getmtime(f'/s3-home-folder/{filename}_link')
+
+        self.assertEqual(body_bytes, b'some-bytes')
+        self.assertTrue(os.path.islink(f'/s3-home-folder/{filename}_link'))
+        self.assertEqual(points_to, f'/s3-home-folder/{filename}')
+        self.assertEqual(mtime_1, mtime_2)
+
     @async_test
     async def test_directory_uploaded_after_start_then_manipulated(self):
         delete_dir = create_directory('/s3-home-folder')
