@@ -119,6 +119,38 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(body_bytes, b'more-bytes')
 
     @async_test
+    async def test_download_nested_files_at_start_bell(self):
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        filename_1 = str(uuid.uuid4()) + ''
+        filename_2 = str(uuid.uuid4()) + ''
+        directory = str(uuid.uuid4())
+        code, _, body = await put_body(request, f'prefix/{directory}/{filename_1}', b'some-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+        code, _, body = await put_body(request, f'prefix/{directory}/{filename_2}', b'more-bytes')
+        self.assertEqual(code, b'200')
+        await buffered(body)
+
+        start, stop = syncer_for('/s3-home-folder', prefix='prefix/')
+        self.add_async_cleanup(stop)
+
+        await start()
+
+        with open(f'/s3-home-folder/{directory}/{filename_1}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'some-bytes')
+        with open(f'/s3-home-folder/{directory}/{filename_2}', 'rb') as file:
+            body_bytes = file.read()
+        self.assertEqual(body_bytes, b'more-bytes')
+
+    @async_test
     async def test_exclude_local_after_start(self):
         delete_dir = create_directory('/s3-home-folder')
         self.add_async_cleanup(delete_dir)
@@ -1391,6 +1423,30 @@ class TestIntegration(unittest.TestCase):
         await start()
 
         filename = str(uuid.uuid4()) + '_🍰'
+        with open(f'/s3-home-folder/{filename}', 'wb') as file:
+            file.write(b'some-bytes')
+
+        await await_upload()
+
+        request, close = get_docker_link_and_minio_compatible_http_pool()
+        self.add_async_cleanup(close)
+
+        self.assertEqual(await object_body(request, filename), b'some-bytes')
+
+    @async_test
+    async def test_single_small_file_uploaded_bell(self):
+        # Users can accidentally create such files, so we make sure we can
+        # handle them
+        delete_dir = create_directory('/s3-home-folder')
+        self.add_async_cleanup(delete_dir)
+        delete_bucket_dir = create_directory('/test-data/my-bucket')
+        self.add_async_cleanup(delete_bucket_dir)
+
+        start, stop = syncer_for('/s3-home-folder')
+        self.add_async_cleanup(stop)
+        await start()
+
+        filename = str(uuid.uuid4()) + '__'
         with open(f'/s3-home-folder/{filename}', 'wb') as file:
             file.write(b'some-bytes')
 
