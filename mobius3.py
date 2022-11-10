@@ -5,6 +5,7 @@ from collections import (
     defaultdict,
 )
 import ctypes
+import contextlib
 import datetime
 import enum
 import fcntl
@@ -32,24 +33,9 @@ from xml.etree import (
     ElementTree as ET,
 )
 
-from aiodnsresolver import (
-    ResolverLoggerAdapter,
-    Resolver,
-)
+import httpx
 from fifolock import (
     FifoLock,
-)
-from lowhaio import (
-    HttpConnectionError,
-    HttpDataError,
-    HttpLoggerAdapter,
-    Pool,
-    buffered,
-    empty_async_iterator,
-    timeout,
-)
-from lowhaio_retry import (
-    retry,
 )
 
 
@@ -117,23 +103,6 @@ def get_logger_adapter_default(extra):
     return S3SyncLoggerAdapter(logging.getLogger('mobius3'), extra)
 
 
-def get_http_logger_adapter_default(s3sync_extra):
-    def _get_http_logger_adapter_default(http_extra):
-        s3sync_adapter = S3SyncLoggerAdapter(logging.getLogger('lowhaio'), s3sync_extra)
-        return HttpLoggerAdapter(s3sync_adapter, http_extra)
-    return _get_http_logger_adapter_default
-
-
-def get_resolver_logger_adapter_default(s3sync_extra):
-    def _get_resolver_logger_adapter_default(http_extra):
-        def __get_resolver_logger_adapter_default(resolver_extra):
-            s3sync_adapter = S3SyncLoggerAdapter(logging.getLogger('aiodnsresolver'), s3sync_extra)
-            http_adapter = HttpLoggerAdapter(s3sync_adapter, http_extra)
-            return ResolverLoggerAdapter(http_adapter, resolver_extra)
-        return __get_resolver_logger_adapter_default
-    return _get_resolver_logger_adapter_default
-
-
 WATCH_MASK = \
     InotifyEvents.IN_MODIFY | \
     InotifyEvents.IN_ATTRIB | \
@@ -150,6 +119,97 @@ DOWNLOAD_WATCH_MASK = \
     InotifyEvents.IN_MOVED_FROM
 
 EVENT_HEADER = struct.Struct('iIII')
+
+
+get_current_task = \
+    asyncio.current_task if hasattr(asyncio, 'current_task') else \
+    asyncio.Task.current_task
+
+
+async def empty_async_iterator():
+    while False:
+        yield
+
+
+def streamed(data):
+    async def _streamed():
+        yield data
+    return _streamed
+
+
+async def buffered(data):
+    return b''.join([chunk async for chunk in data])
+
+
+@contextlib.contextmanager
+def timeout(loop, max_time):
+
+    cancelling_due_to_timeout = False
+    current_task = get_current_task()
+
+    def cancel():
+        nonlocal cancelling_due_to_timeout
+        cancelling_due_to_timeout = True
+        current_task.cancel()
+
+    def reset():
+        nonlocal handle
+        handle.cancel()
+        handle = loop.call_later(max_time, cancel)
+
+    handle = loop.call_later(max_time, cancel)
+
+    try:
+        yield reset
+    except asyncio.CancelledError:
+        if cancelling_due_to_timeout:
+            raise asyncio.TimeoutError()
+        raise
+    finally:
+        handle.cancel()
+
+
+def Pool(
+        get_ssl_context=ssl.create_default_context,
+        get_logger_adapter=get_logger_adapter_default,
+    ):
+
+    logger = get_logger_adapter({})
+
+    async def log_request(request):
+        logger.info('[http] Request: %s', request.method, request.url)
+
+    async def log_response(response):
+        logger.info('[http] Response: %s %s %s', response.request.method, response.request.url, response.status_code)
+
+    client = httpx.AsyncClient(
+        timeout=10.0, transport=httpx.AsyncHTTPTransport(retries=3, verify=get_ssl_context()),
+        event_hooks={'request': [log_request], 'response': [log_response]}
+    )
+
+    async def request(method, url, params=(), headers=(),
+                      body=empty_async_iterator, body_args=(), body_kwargs=()):
+
+        request = client.build_request(
+            method, url, params=params, headers=headers,
+            content=body(*body_args, **dict(body_kwargs)),
+        )
+        response = await client.send(request, stream=True)
+
+        async def response_body():
+            try:
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+            finally:
+                await response.aclose()
+
+        return (
+            str(response.status_code).encode('ascii'),
+            tuple((key.encode('ascii'), value.encode('ascii')) for (key, value) in response.headers.items()),
+            response_body(),
+        )
+
+    return request, client.aclose
 
 
 def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
@@ -256,8 +316,6 @@ def Syncer(
         directory_watch_timeout=5,
         download_directory='.mobius3',
         get_logger_adapter=get_logger_adapter_default,
-        get_http_logger_adapter=get_http_logger_adapter_default,
-        get_resolver_logger_adapter=get_resolver_logger_adapter_default,
         local_modification_persistance=120,
         download_interval=10,
         exclude_remote=r'^$',
@@ -351,9 +409,7 @@ def Syncer(
 
     def signed(request, credentials, service, region):
         async def _signed(logger, method, url, params=(), headers=(),
-                          body=empty_async_iterator, body_args=(), body_kwargs=(),
-                          get_logger_adapter=get_http_logger_adapter,
-                          get_resolver_logger_adapter=get_resolver_logger_adapter):
+                          body=empty_async_iterator, body_args=(), body_kwargs=()):
 
             body_hash = 'UNSIGNED-PAYLOAD'
             access_key_id, secret_access_key, auth_headers = await credentials(request)
@@ -361,24 +417,18 @@ def Syncer(
             parsed_url = urllib.parse.urlsplit(url)
             all_headers = aws_sigv4_headers(
                 access_key_id, secret_access_key, headers + auth_headers, service, region,
-                parsed_url.hostname, method.decode(), parsed_url.path, params, body_hash,
+                parsed_url.netloc, method.decode(), parsed_url.path, params, body_hash,
             )
 
             return await request(
                 method, url, params=params, headers=all_headers,
                 body=body, body_args=body_args, body_kwargs=body_kwargs,
-                get_logger_adapter=get_logger_adapter(logger.extra),
-                get_resolver_logger_adapter=get_resolver_logger_adapter(logger.extra),
             )
 
         return _signed
 
-    retriable_request = retry(request, exception_intervals=(
-        (HttpConnectionError, (0, 0, 0)),
-        (HttpDataError, (0, 1, 2, 4, 8, 16)),
-    ))
     signed_request = signed(
-        retriable_request, credentials=get_credentials, service='s3', region=region,
+        request, credentials=get_credentials, service='s3', region=region,
     )
 
     def ensure_file_in_tree_cache(path):
@@ -1443,10 +1493,6 @@ def main():
         metavar='',
         nargs='?', const=True, default=False)
     parser.add_argument(
-        '--disable-0x20-dns-encoding',
-        metavar='',
-        nargs='?', const=True, default=False)
-    parser.add_argument(
         '--log-level',
         metavar='',
         nargs='?', const=True, default='WARNING')
@@ -1459,9 +1505,6 @@ def main():
     logger.setLevel(parsed_args.log_level)
     logger.addHandler(stdout_handler)
 
-    async def transform_fqdn_no_0x20_encoding(fqdn):
-        return fqdn
-
     def get_ssl_context_without_verifcation():
         ssl_context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
         ssl_context.check_hostname = False
@@ -1469,12 +1512,6 @@ def main():
         return ssl_context
 
     pool_args = {
-        **({
-            'get_dns_resolver': lambda **kwargs: Resolver(**{
-                **kwargs,
-                'transform_fqdn': transform_fqdn_no_0x20_encoding,
-            }),
-        } if parsed_args.disable_0x20_dns_encoding else {}),
         **({
             'get_ssl_context': get_ssl_context_without_verifcation,
         } if parsed_args.disable_ssl_verification else {}),

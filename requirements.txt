@@ -1,4 +1,2 @@
-aiodnsresolver==0.0.149
 fifolock==0.0.20
-lowhaio-retry>=0.0.5
-lowhaio==0.0.85
+httpx==0.23.0

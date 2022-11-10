@@ -13,20 +13,15 @@ import unittest
 import urllib.parse
 import uuid
 
-from aiodnsresolver import (
-    Resolver,
-)
 from aiohttp import (
     web,
 )
-from lowhaio import (
-    Pool,
-    buffered,
-    streamed,
-)
 from mobius3 import (
+    Pool,
     Syncer,
     empty_async_iterator,
+    streamed,
+    buffered,
     aws_sigv4_headers,
 )
 
@@ -2319,7 +2314,7 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             'mobius3', '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
         self.addAsyncCleanup(terminate, mobius3_process)
@@ -2354,7 +2349,7 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             '--credentials-source', 'ecs-container-endpoint',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -2386,7 +2381,7 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
         self.addAsyncCleanup(terminate, mobius3_process)
@@ -2408,7 +2403,7 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
         self.addAsyncCleanup(terminate, mobius3_process)
@@ -2438,7 +2433,7 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
         self.addAsyncCleanup(terminate, mobius3_process)
@@ -2468,7 +2463,7 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
         self.addAsyncCleanup(terminate, mobius3_process)
@@ -2499,7 +2494,7 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--prefix', 'my-folder/',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
         self.addAsyncCleanup(terminate, mobius3_process)
@@ -2537,19 +2532,11 @@ def create_directory(path):
 
 
 def get_docker_link_and_minio_compatible_http_pool():
-    async def transform_fqdn(fqdn):
-        return fqdn
-
     ssl_context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
     return Pool(
-        # 0x20 encoding does not appear to work with linked containers
-        get_dns_resolver=lambda **kwargs: Resolver(**{
-            'transform_fqdn': transform_fqdn,
-            **kwargs,
-        }),
         # We use self-signed certs locally
         get_ssl_context=lambda: ssl_context,
     )
@@ -2724,7 +2711,7 @@ def signed(request, credentials, service, region):
         all_headers = aws_sigv4_headers(
             access_key_id, secret_access_key,
             headers + auth_headers + ((b'content-length', str(length).encode()),), service, region,
-            parsed_url.hostname, method.decode(), parsed_url.path, params, body_hash.hexdigest(),
+            parsed_url.netloc, method.decode(), parsed_url.path, params, body_hash.hexdigest(),
         )
 
         return await request(method, url, params=params, headers=all_headers, body=hashed_body)
