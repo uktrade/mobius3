@@ -2,6 +2,7 @@ import asyncio
 from datetime import (
     datetime,
 )
+import hashlib
 import json
 import os
 import re
@@ -23,11 +24,10 @@ from lowhaio import (
     buffered,
     streamed,
 )
-from lowhaio_aws_sigv4 import (
-    signed,
-)
 from mobius3 import (
     Syncer,
+    empty_async_iterator,
+    aws_sigv4_headers,
 )
 
 
@@ -2696,3 +2696,37 @@ async def set_temporary_creds(request):
         ))
     await buffered(body)
     return creds
+
+
+def signed(request, credentials, service, region):
+
+    async def _signed(method, url, params=(), headers=(),
+                      body=empty_async_iterator, body_args=(), body_kwargs=()):
+
+        body_hash = hashlib.sha256()
+        chunks = []
+        length = 0
+
+        # The body must be buffered to get a hash before the request is
+        # initiated, but the chunks don't need to be concatanated together
+        async for chunk in body(*body_args, **dict(body_kwargs)):
+            body_hash.update(chunk)
+            chunks.append(chunk)
+            length += len(chunk)
+
+        async def hashed_body():
+            for chunk in chunks:
+                yield chunk
+
+        access_key_id, secret_access_key, auth_headers = await credentials()
+
+        parsed_url = urllib.parse.urlsplit(url)
+        all_headers = aws_sigv4_headers(
+            access_key_id, secret_access_key,
+            headers + auth_headers + ((b'content-length', str(length).encode()),), service, region,
+            parsed_url.hostname, method.decode(), parsed_url.path, params, body_hash.hexdigest(),
+        )
+
+        return await request(method, url, params=params, headers=all_headers, body=hashed_body)
+
+    return _signed
