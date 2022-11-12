@@ -185,9 +185,9 @@ def Pool(
         event_hooks={'request': [log_request], 'response': [log_response]}
     )
 
-    async def request(method, url, params=(), headers=(), body=empty_async_iterator()):
+    async def request(method, url, params=(), headers=(), content=empty_async_iterator()):
 
-        request = client.build_request(method, url, params=params, headers=headers, content=body)
+        request = client.build_request(method, url, params=params, headers=headers, content=content)
         response = await client.send(request, stream=True)
 
         async def response_body():
@@ -207,7 +207,7 @@ def Pool(
 
 
 def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
-                      service, region, host, method, path, params, body_hash):
+                      service, region, host, method, path, params, content_hash):
     algorithm = 'AWS4-HMAC-SHA256'
 
     now = datetime.datetime.utcnow()
@@ -221,7 +221,7 @@ def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
     )
     required_headers = (
         ('host', host),
-        ('x-amz-content-sha256', body_hash),
+        ('x-amz-content-sha256', content_hash),
         ('x-amz-date', amzdate),
     )
     headers = sorted(pre_auth_headers_lower + required_headers)
@@ -238,7 +238,7 @@ def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
             canonical_headers = ''.join(f'{key}:{value}\n' for key, value in headers)
 
             return f'{method}\n{canonical_uri}\n{canonical_querystring}\n' + \
-                   f'{canonical_headers}\n{signed_headers}\n{body_hash}'
+                   f'{canonical_headers}\n{signed_headers}\n{content_hash}'
 
         def sign(key, msg):
             return hmac.new(key, msg.encode('ascii'), hashlib.sha256).digest()
@@ -258,7 +258,7 @@ def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
             f'SignedHeaders={signed_headers}, Signature=' + signature()).encode('ascii')
          ),
         (b'x-amz-date', amzdate.encode('ascii')),
-        (b'x-amz-content-sha256', body_hash.encode('ascii')),
+        (b'x-amz-content-sha256', content_hash.encode('ascii')),
     ) + pre_auth_headers
 
 
@@ -402,18 +402,18 @@ def Syncer(
     request, close_pool = get_pool()
 
     def signed(request, credentials, service, region):
-        async def _signed(logger, method, url, params=(), headers=(), body=empty_async_iterator()):
+        async def _signed(logger, method, url, params=(), headers=(), content=empty_async_iterator()):
 
-            body_hash = 'UNSIGNED-PAYLOAD'
+            content_hash = 'UNSIGNED-PAYLOAD'
             access_key_id, secret_access_key, auth_headers = await credentials(request)
 
             parsed_url = urllib.parse.urlsplit(url)
             all_headers = aws_sigv4_headers(
                 access_key_id, secret_access_key, headers + auth_headers, service, region,
-                parsed_url.netloc, method.decode(), parsed_url.path, params, body_hash,
+                parsed_url.netloc, method.decode(), parsed_url.path, params, content_hash,
             )
 
-            return await request(method, url, params=params, headers=all_headers, body=body)
+            return await request(method, url, params=params, headers=all_headers, content=content)
 
         return _signed
 
@@ -946,10 +946,10 @@ def Syncer(
         is_symlink = os.path.islink(path)
 
         if not is_symlink:
-            body = file_body()
+            content = file_body()
             content_length = str(os.stat(path).st_size).encode()
         else:
-            body = symlink_points_to()
+            content = symlink_points_to()
             content_length = str(len(os.readlink(path).encode('utf-8'))).encode()
 
         mtime = str(os.lstat(path).st_mtime).encode()
@@ -971,7 +971,7 @@ def Syncer(
             set_etag(path, headers)
 
         await locked_request(
-            logger, b'PUT', path, file_key_for_path(path), body=body,
+            logger, b'PUT', path, file_key_for_path(path), content=content,
             get_headers=lambda: (
                 (b'content-length', content_length),
             ) + data,
@@ -1061,7 +1061,7 @@ def Syncer(
 
     async def locked_request(logger, method, path, key, cont=lambda: True,
                              get_headers=lambda: (),
-                             body=empty_async_iterator(),
+                             content=empty_async_iterator(),
                              on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
@@ -1072,7 +1072,7 @@ def Syncer(
             headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
             code, headers, body = await signed_request(
-                logger, method, remote_url, headers=get_headers(), body=body)
+                logger, method, remote_url, headers=get_headers(), content=content)
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 

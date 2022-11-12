@@ -2609,7 +2609,7 @@ async def put_body(request, key, body):
         request, credentials=get_credentials_from_environment,
         service='s3', region='us-east-1',
     )
-    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}', body=streamed(body))
+    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}', content=streamed(body))
 
 
 async def set_temporary_creds(request):
@@ -2662,7 +2662,7 @@ async def set_temporary_creds(request):
         headers=(
             (b'content-type', b'application/x-www-form-urlencoded; charset=utf-8'),
         ),
-        body=streamed(request_body_bytes),
+        content=streamed(request_body_bytes),
     )
     body_bytes = await buffered(body)
 
@@ -2676,10 +2676,10 @@ async def set_temporary_creds(request):
         'Token': xml(b'SessionToken'),
     }
 
-    request_body_bytes = json.dumps(creds).encode('utf-8')
+    request_content_bytes = json.dumps(creds).encode('utf-8')
     _, _, body = await request(
-        b'POST', 'http://169.254.170.2/creds', body=streamed(request_body_bytes), headers=(
-            (b'content-length', str(len(request_body_bytes)).encode()),
+        b'POST', 'http://169.254.170.2/creds', content=streamed(request_content_bytes), headers=(
+            (b'content-length', str(len(request_content_bytes)).encode()),
         ))
     await buffered(body)
     return creds
@@ -2687,20 +2687,20 @@ async def set_temporary_creds(request):
 
 def signed(request, credentials, service, region):
 
-    async def _signed(method, url, params=(), headers=(), body=empty_async_iterator()):
+    async def _signed(method, url, params=(), headers=(), content=empty_async_iterator()):
 
-        body_hash = hashlib.sha256()
+        content_hash = hashlib.sha256()
         chunks = []
         length = 0
 
         # The body must be buffered to get a hash before the request is
         # initiated, but the chunks don't need to be concatanated together
-        async for chunk in body:
-            body_hash.update(chunk)
+        async for chunk in content:
+            content_hash.update(chunk)
             chunks.append(chunk)
             length += len(chunk)
 
-        async def hashed_body():
+        async def hashed_content():
             for chunk in chunks:
                 yield chunk
 
@@ -2710,9 +2710,9 @@ def signed(request, credentials, service, region):
         all_headers = aws_sigv4_headers(
             access_key_id, secret_access_key,
             headers + auth_headers + ((b'content-length', str(length).encode()),), service, region,
-            parsed_url.netloc, method.decode(), parsed_url.path, params, body_hash.hexdigest(),
+            parsed_url.netloc, method.decode(), parsed_url.path, params, content_hash.hexdigest(),
         )
 
-        return await request(method, url, params=params, headers=all_headers, body=hashed_body())
+        return await request(method, url, params=params, headers=all_headers, content=hashed_content())
 
     return _signed
