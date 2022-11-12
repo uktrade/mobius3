@@ -198,7 +198,7 @@ def Pool(
                 await response.aclose()
 
         return (
-            str(response.status_code).encode('ascii'),
+            response.status_code,
             tuple((key.encode('ascii'), value.encode('ascii')) for (key, value) in response.headers.items()),
             response_body(),
         )
@@ -1076,7 +1076,7 @@ def Syncer(
             logger.debug('%s %s', code, headers)
             body_bytes = await buffered(body)
 
-            if code not in [b'200', b'204']:
+            if code not in [200, 204]:
                 raise Exception(code, body_bytes)
 
             on_done(path, headers)
@@ -1131,7 +1131,7 @@ def Syncer(
                 code, _, body = await signed_request(
                     logger, b'HEAD', bucket_url + prefix + str(path))
                 await buffered(body)
-                if code != b'404':
+                if code != 404:
                     continue
 
                 # Check again if we have made modifications since the above request can take time
@@ -1169,7 +1169,7 @@ def Syncer(
                 code, _, body = await signed_request(
                     logger, b'HEAD', bucket_url + prefix + str(path) + '/')
                 await buffered(body)
-                if code != b'404':
+                if code != 404:
                     continue
 
                 try:
@@ -1198,7 +1198,7 @@ def Syncer(
             logger.info('Downloading: %s', full_path)
 
             code, headers, body = await signed_request(logger, b'GET', bucket_url + prefix + path)
-            if code != b'200':
+            if code != 200:
                 await buffered(body)  # Fetch all bytes and return to pool
                 raise Exception(code)
 
@@ -1330,7 +1330,7 @@ def Syncer(
             ) + extra_query_items
             code, _, body = await signed_request(logger, b'GET', bucket_url, params=query)
             body_bytes = await buffered(body)
-            if code != b'200':
+            if code != 200:
                 raise Exception(code, body_bytes)
 
             namespace = '{http://s3.amazonaws.com/doc/2006-03-01/}'
