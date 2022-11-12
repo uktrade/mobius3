@@ -2687,8 +2687,7 @@ async def set_temporary_creds(request):
 
 def signed(request, credentials, service, region):
 
-    async def _signed(method, url, params=(), headers=(),
-                      body=empty_async_iterator, body_args=(), body_kwargs=()):
+    async def _signed(method, url, params=(), headers=(), body=empty_async_iterator()):
 
         body_hash = hashlib.sha256()
         chunks = []
@@ -2696,7 +2695,7 @@ def signed(request, credentials, service, region):
 
         # The body must be buffered to get a hash before the request is
         # initiated, but the chunks don't need to be concatanated together
-        async for chunk in body(*body_args, **dict(body_kwargs)):
+        async for chunk in body:
             body_hash.update(chunk)
             chunks.append(chunk)
             length += len(chunk)
@@ -2714,6 +2713,6 @@ def signed(request, credentials, service, region):
             parsed_url.netloc, method.decode(), parsed_url.path, params, body_hash.hexdigest(),
         )
 
-        return await request(method, url, params=params, headers=all_headers, body=hashed_body)
+        return await request(method, url, params=params, headers=all_headers, body=hashed_body())
 
     return _signed

@@ -131,10 +131,8 @@ async def empty_async_iterator():
         yield
 
 
-def streamed(data):
-    async def _streamed():
-        yield data
-    return _streamed
+async def streamed(data):
+    yield data
 
 
 async def buffered(data):
@@ -187,13 +185,9 @@ def Pool(
         event_hooks={'request': [log_request], 'response': [log_response]}
     )
 
-    async def request(method, url, params=(), headers=(),
-                      body=empty_async_iterator, body_args=(), body_kwargs=()):
+    async def request(method, url, params=(), headers=(), body=empty_async_iterator()):
 
-        request = client.build_request(
-            method, url, params=params, headers=headers,
-            content=body(*body_args, **dict(body_kwargs)),
-        )
+        request = client.build_request(method, url, params=params, headers=headers, content=body)
         response = await client.send(request, stream=True)
 
         async def response_body():
@@ -408,8 +402,7 @@ def Syncer(
     request, close_pool = get_pool()
 
     def signed(request, credentials, service, region):
-        async def _signed(logger, method, url, params=(), headers=(),
-                          body=empty_async_iterator, body_args=(), body_kwargs=()):
+        async def _signed(logger, method, url, params=(), headers=(), body=empty_async_iterator()):
 
             body_hash = 'UNSIGNED-PAYLOAD'
             access_key_id, secret_access_key, auth_headers = await credentials(request)
@@ -420,10 +413,7 @@ def Syncer(
                 parsed_url.netloc, method.decode(), parsed_url.path, params, body_hash,
             )
 
-            return await request(
-                method, url, params=params, headers=all_headers,
-                body=body, body_args=body_args, body_kwargs=body_kwargs,
-            )
+            return await request(method, url, params=params, headers=all_headers, body=body)
 
         return _signed
 
@@ -956,10 +946,10 @@ def Syncer(
         is_symlink = os.path.islink(path)
 
         if not is_symlink:
-            body = file_body
+            body = file_body()
             content_length = str(os.stat(path).st_size).encode()
         else:
-            body = symlink_points_to
+            body = symlink_points_to()
             content_length = str(len(os.readlink(path).encode('utf-8'))).encode()
 
         mtime = str(os.lstat(path).st_mtime).encode()
@@ -1071,7 +1061,7 @@ def Syncer(
 
     async def locked_request(logger, method, path, key, cont=lambda: True,
                              get_headers=lambda: (),
-                             body=empty_async_iterator,
+                             body=empty_async_iterator(),
                              on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
