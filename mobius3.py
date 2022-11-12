@@ -1441,7 +1441,7 @@ def main():
             get_credentials_from_ecs_endpoint()
     }
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
     cleanup = loop.run_until_complete(async_main(syncer_args))
 
     async def cleanup_then_stop():
