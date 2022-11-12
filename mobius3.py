@@ -1408,7 +1408,8 @@ def main():
         return fqdn
 
     def get_ssl_context_without_verifcation():
-        ssl_context = ssl.SSLContext()
+        ssl_context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
         return ssl_context
 

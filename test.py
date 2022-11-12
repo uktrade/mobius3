@@ -2623,7 +2623,8 @@ def get_docker_link_and_minio_compatible_http_pool():
     async def transform_fqdn(fqdn):
         return fqdn
 
-    ssl_context = ssl.SSLContext()
+    ssl_context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
+    ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
     return Pool(
