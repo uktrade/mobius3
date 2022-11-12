@@ -199,7 +199,7 @@ def Pool(
 
         return (
             response.status_code,
-            tuple(response.headers.items()),
+            response.headers,
             response_body(),
         )
 
@@ -456,7 +456,7 @@ def Syncer(
         return directory['children'][path.name]
 
     def set_etag(path, headers):
-        etags[path] = dict(headers)['etag']
+        etags[path] = headers['etag']
 
     def queued_push_local_change(path):
         push_queued[path] += 1
@@ -1202,7 +1202,6 @@ def Syncer(
                 await buffered(body)  # Fetch all bytes and return to pool
                 raise Exception(code)
 
-            headers_dict = dict(headers)
             is_directory = path[-1] == '/'
 
             directory_to_ensure_created = \
@@ -1236,14 +1235,14 @@ def Syncer(
                     ignore_next_directory_upload[_dir] = True
 
             try:
-                modified = float(headers_dict['x-amz-meta-mtime'])
+                modified = float(headers['x-amz-meta-mtime'])
             except (KeyError, ValueError):
                 modified = datetime.datetime.strptime(
-                    headers_dict['last-modified'],
+                    headers['last-modified'],
                     '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
             try:
-                mode = int(headers_dict['x-amz-meta-mode'])
+                mode = int(headers['x-amz-meta-mode'])
             except (KeyError, ValueError):
                 mode = None
 
@@ -1257,7 +1256,7 @@ def Syncer(
                     return
 
                 os.utime(full_path, (modified, modified))
-                etags[full_path] = headers_dict['etag']
+                etags[full_path] = headers['etag']
 
                 # Ensure that subsequent renames will attempt to move the directory
                 ensure_dir_in_tree_cache(full_path)
@@ -1317,7 +1316,7 @@ def Syncer(
                     os.remove(temporary_path)
                 except FileNotFoundError:
                     pass
-            etags[full_path] = headers_dict['etag']
+            etags[full_path] = headers['etag']
 
         download_job_queue.put_nowait((logger, download))
 
