@@ -196,7 +196,7 @@ def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
     credential_scope = f'{datestamp}/{region}/{service}/aws4_request'
 
     pre_auth_headers_lower = tuple(
-        (header_key.decode().lower(), ' '.join(header_value.decode().split()))
+        (header_key.lower(), ' '.join(header_value.split()))
         for header_key, header_value in pre_auth_headers
     )
     required_headers = (
@@ -233,12 +233,12 @@ def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
         return sign(request_key, string_to_sign).hex()
 
     return (
-        (b'authorization', (
+        ('authorization', (
             f'{algorithm} Credential={access_key_id}/{credential_scope}, '
-            f'SignedHeaders={signed_headers}, Signature=' + signature()).encode('ascii')
+            f'SignedHeaders={signed_headers}, Signature=' + signature())
          ),
-        (b'x-amz-date', amzdate.encode('ascii')),
-        (b'x-amz-content-sha256', content_hash.encode('ascii')),
+        ('x-amz-date', amzdate),
+        ('x-amz-content-sha256', content_hash),
     ) + pre_auth_headers
 
 
@@ -270,7 +270,7 @@ def get_credentials_from_ecs_endpoint():
             aws_secret_access_key = creds['SecretAccessKey']
             expiration = datetime.datetime.strptime(creds['Expiration'], '%Y-%m-%dT%H:%M:%SZ')
             pre_auth_headers = (
-                (b'x-amz-security-token', creds['Token'].encode(),),
+                ('x-amz-security-token', creds['Token']),
             )
 
         return aws_access_key_id, aws_secret_access_key, pre_auth_headers
@@ -929,13 +929,13 @@ def Syncer(
 
         if not is_symlink:
             content = file_body()
-            content_length = str(os.stat(path).st_size).encode()
+            content_length = str(os.stat(path).st_size)
         else:
             content = symlink_points_to()
-            content_length = str(len(os.readlink(path).encode('utf-8'))).encode()
+            content_length = str(len(os.readlink(path).encode('utf-8')))
 
-        mtime = str(os.lstat(path).st_mtime).encode()
-        mode = str(os.lstat(path).st_mode).encode()
+        mtime = str(os.lstat(path).st_mtime)
+        mode = str(os.lstat(path).st_mode)
 
         # Ensure we only progress if the content length hasn't changed since
         # we have queued the upload
@@ -944,8 +944,8 @@ def Syncer(
             raise FileContentChanged(path)
 
         data = (
-            (b'x-amz-meta-mtime', mtime),
-            (b'x-amz-meta-mode', mode),
+            ('x-amz-meta-mtime', mtime),
+            ('x-amz-meta-mode', mode),
         )
 
         def set_etag_and_meta(path, headers):
@@ -955,7 +955,7 @@ def Syncer(
         await locked_request(
             logger, b'PUT', path, file_key_for_path(path), content=content,
             get_headers=lambda: (
-                (b'content-length', content_length),
+                ('content-length', content_length),
             ) + data,
             on_done=set_etag_and_meta,
         )
@@ -963,8 +963,8 @@ def Syncer(
     async def upload_meta(logger, path, content_version_current, content_version_original):
         logger.info('Uploading meta %s', path)
 
-        mtime = str(os.lstat(path).st_mtime).encode()
-        mode = str(os.lstat(path).st_mode).encode()
+        mtime = str(os.lstat(path).st_mtime)
+        mode = str(os.lstat(path).st_mode)
 
         # Ensure we only progress if the content hasn't changed since we have
         # queued the upload
@@ -973,8 +973,8 @@ def Syncer(
             raise FileContentChanged(path)
 
         data = (
-            (b'x-amz-meta-mtime', mtime),
-            (b'x-amz-meta-mode', mode),
+            ('x-amz-meta-mtime', mtime),
+            ('x-amz-meta-mode', mode),
         )
 
         def set_meta(path, _):
@@ -985,9 +985,9 @@ def Syncer(
             logger, b'PUT', path, key,
             cont=lambda: meta[path] != data,
             get_headers=lambda: data + (
-                (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
-                (b'x-amz-metadata-directive', b'REPLACE'),
-                (b'x-amz-copy-source-if-match', etags[path].encode()),
+                ('x-amz-copy-source', f'/{bucket}/{key}'),
+                ('x-amz-metadata-directive', 'REPLACE'),
+                ('x-amz-copy-source-if-match', etags[path]),
             ),
             on_done=set_meta,
         )
@@ -995,7 +995,7 @@ def Syncer(
     async def upload_directory(logger, path):
         logger.info('Uploading directory %s', path)
 
-        mtime = str(os.stat(path).st_mtime).encode()
+        mtime = str(os.stat(path).st_mtime)
 
         if not os.path.isdir(path):
             raise FileContentChanged(path)
@@ -1003,8 +1003,8 @@ def Syncer(
         await locked_request(
             logger, b'PUT', path, dir_key_for_path(path),
             get_headers=lambda: (
-                (b'content-length', b'0'),
-                (b'x-amz-meta-mtime', mtime),
+                ('content-length', '0'),
+                ('x-amz-meta-mtime', mtime),
             ),
             on_done=set_etag,
         )

@@ -2589,7 +2589,7 @@ async def put_body(client, key, body):
         service='s3', region='us-east-1',
     )
     return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}', headers=(
-        (b'content-length', str(len(body)).encode()),
+        ('content-length', str(len(body))),
     ), content=streamed(body))
 
 
@@ -2641,8 +2641,8 @@ async def set_temporary_creds(client):
     response = await signed_request(
         b'POST', 'https://minio:9000/',
         headers=(
-            (b'content-type', b'application/x-www-form-urlencoded; charset=utf-8'),
-            (b'content-length', str(len(request_body_bytes)).encode()),
+            ('content-type', 'application/x-www-form-urlencoded; charset=utf-8'),
+            ('content-length', str(len(request_body_bytes))),
         ),
         content=streamed(request_body_bytes),
     )
@@ -2660,7 +2660,7 @@ async def set_temporary_creds(client):
     request_content_bytes = json.dumps(creds).encode('utf-8')
     await client.request(
         b'POST', 'http://169.254.170.2/creds', content=streamed(request_content_bytes), headers=(
-            (b'content-length', str(len(request_content_bytes)).encode()),
+            ('content-length', str(len(request_content_bytes))),
         ))
     return creds
 
