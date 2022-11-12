@@ -2609,7 +2609,9 @@ async def put_body(request, key, body):
         request, credentials=get_credentials_from_environment,
         service='s3', region='us-east-1',
     )
-    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}', content=streamed(body))
+    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}', headers=(
+        (b'content-length', str(len(body)).encode()),
+    ), content=streamed(body))
 
 
 async def set_temporary_creds(request):
@@ -2661,6 +2663,7 @@ async def set_temporary_creds(request):
         b'POST', 'https://minio:9000/',
         headers=(
             (b'content-type', b'application/x-www-form-urlencoded; charset=utf-8'),
+            (b'content-length', str(len(request_body_bytes)).encode()),
         ),
         content=streamed(request_body_bytes),
     )
@@ -2691,14 +2694,12 @@ def signed(request, credentials, service, region):
 
         content_hash = hashlib.sha256()
         chunks = []
-        length = 0
 
         # The body must be buffered to get a hash before the request is
         # initiated, but the chunks don't need to be concatanated together
         async for chunk in content:
             content_hash.update(chunk)
             chunks.append(chunk)
-            length += len(chunk)
 
         async def hashed_content():
             for chunk in chunks:
@@ -2709,7 +2710,7 @@ def signed(request, credentials, service, region):
         parsed_url = urllib.parse.urlsplit(url)
         all_headers = aws_sigv4_headers(
             access_key_id, secret_access_key,
-            headers + auth_headers + ((b'content-length', str(length).encode()),), service, region,
+            headers + auth_headers, service, region,
             parsed_url.netloc, method.decode(), parsed_url.path, params, content_hash.hexdigest(),
         )
 
