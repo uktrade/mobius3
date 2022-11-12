@@ -337,11 +337,6 @@ class TestIntegration(unittest.TestCase):
         dirname_2 = str(uuid.uuid4())
         dirname_3 = str(uuid.uuid4())
 
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-        )
-        self.add_async_cleanup(stop)
-
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
         async def handle_list(_):
@@ -388,6 +383,10 @@ class TestIntegration(unittest.TestCase):
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+        )
+        self.add_async_cleanup(stop)
         await start()
 
         with open(f'/s3-home-folder/{dirname_1}/some-file', 'rb') as file:
@@ -409,12 +408,6 @@ class TestIntegration(unittest.TestCase):
         dirname_1 = str(uuid.uuid4())
         dirname_2 = str(uuid.uuid4())
         dirname_3 = str(uuid.uuid4())
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-            prefix='prefix/'
-        )
-        self.add_async_cleanup(stop)
 
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
@@ -467,6 +460,11 @@ class TestIntegration(unittest.TestCase):
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            prefix='prefix/'
+        )
+        self.add_async_cleanup(stop)
         await start()
 
         with open(f'/s3-home-folder/{dirname_1}/some-file', 'rb') as file:
@@ -485,11 +483,6 @@ class TestIntegration(unittest.TestCase):
 
         dirname_1 = str(uuid.uuid4())
         dirname_2 = str(uuid.uuid4())
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-        )
-        self.add_async_cleanup(stop)
 
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
@@ -536,6 +529,10 @@ class TestIntegration(unittest.TestCase):
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+        )
+        self.add_async_cleanup(stop)
         await start()
 
         with open(f'/s3-home-folder/{dirname_1}/{dirname_2}/some-file', 'rb') as file:
@@ -569,13 +566,6 @@ class TestIntegration(unittest.TestCase):
             'etag': '"fba9dede5f27731c9771645a39863328"',
         }
 
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-            local_modification_persistance=1,
-            download_interval=1,
-        )
-        self.add_async_cleanup(stop)
-
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
         async def handle_list(_):
@@ -596,6 +586,12 @@ class TestIntegration(unittest.TestCase):
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            local_modification_persistance=1,
+            download_interval=1,
+        )
+        self.add_async_cleanup(stop)
         await start()
 
         self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_1}/{dirname_2}'))
@@ -624,12 +620,6 @@ class TestIntegration(unittest.TestCase):
 
         # Ensure the file has not been modified within local_modification_persistance
         await asyncio.sleep(1)
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-            local_modification_persistance=1,
-        )
-        self.add_async_cleanup(stop)
 
         filename_remote = str(uuid.uuid4())
 
@@ -661,6 +651,11 @@ class TestIntegration(unittest.TestCase):
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            local_modification_persistance=1,
+        )
+        self.add_async_cleanup(stop)
         asyncio.create_task(start())
 
         # We have a slow initial download, during which the existing file
@@ -709,13 +704,6 @@ class TestIntegration(unittest.TestCase):
             'etag': '"fba9dede5f27731c9771645a39863328"',
         }
 
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-            local_modification_persistance=1,
-            download_interval=1,
-        )
-        self.add_async_cleanup(stop)
-
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
         async def handle_list(_):
@@ -750,6 +738,12 @@ class TestIntegration(unittest.TestCase):
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            local_modification_persistance=1,
+            download_interval=1,
+        )
+        self.add_async_cleanup(stop)
         await start()
 
         self.assertTrue(os.path.isdir(
@@ -1023,11 +1017,6 @@ class TestIntegration(unittest.TestCase):
         dirname_3 = str(uuid.uuid4())
         dirname_4 = str(uuid.uuid4())
 
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-        )
-        self.add_async_cleanup(stop)
-
         async def handle_list(_):
             body = f'''<?xml version="1.0" encoding="UTF-8"?>
             <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -1068,6 +1057,10 @@ class TestIntegration(unittest.TestCase):
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+        )
+        self.add_async_cleanup(stop)
         await start()
 
         os.mkdir(f'/s3-home-folder/{dirname_1}')
