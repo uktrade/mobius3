@@ -42,8 +42,8 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 200)
         await buffered(body)
 
-        date = dict((key.lower(), value) for key, value in headers)[b'date']
-        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+        date = dict(headers)['date']
+        date_ts = datetime.strptime(date, '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
         # Make sure time progresses at least one second, to test that there
         # is some code setting mtime
@@ -191,8 +191,8 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         code, headers, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
         self.assertEqual(code, 200)
 
-        date = dict((key.lower(), value) for key, value in headers)[b'date']
-        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+        date = dict(headers)['date']
+        date_ts = datetime.strptime(date, '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
         await buffered(body)
 
@@ -235,8 +235,8 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         code, headers, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
         self.assertEqual(code, 200)
 
-        date = dict((key.lower(), value) for key, value in headers)[b'date']
-        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+        date = dict(headers)['date']
+        date_ts = datetime.strptime(date, '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
         await buffered(body)
 
@@ -277,7 +277,7 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
             b'some-bytes')
         self.assertEqual(code, 200)
         await buffered(body)
-        date = dict((key.lower(), value) for key, value in headers)[b'date']
+        date = dict(headers)['date']
 
         await asyncio.sleep(2)
 
@@ -286,7 +286,7 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         code, headers, body = await object_triple(request, f'prefix/{dirname_1}/{filename_1}')
         self.assertEqual(code, 200)
         await buffered(body)
-        modified = dict((key.lower(), value) for key, value in headers)[b'last-modified']
+        modified = dict(headers)['last-modified']
         self.assertEqual(modified, date)
 
         with open(f'/s3-home-folder/{dirname_1}/{filename_1}', 'rb') as file:
