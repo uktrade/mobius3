@@ -445,19 +445,27 @@ def Syncer(
         watch_directory_recursive(logger, directory, WATCH_MASK, upload)
 
     async def stop():
+        async def cancel(task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
         # Make every effort to read all incoming events and finish the queue
         logger = get_logger_adapter({'mobius3_component': 'stop'})
         logger.info('Stopping')
-        download_manager_task.cancel()
+        if download_manager_task is not None:
+            await cancel(download_manager_task)
         for task in download_tasks:
-            task.cancel()
+            await cancel(task)
         read_events(logger)
         while upload_job_queue._unfinished_tasks:
             await upload_job_queue.join()
             read_events(logger)
         stop_inotify()
         for task in upload_tasks:
-            task.cancel()
+            await cancel(task)
         await close_pool()
         await asyncio.sleep(0)
         logger.info('Finished stopping')
