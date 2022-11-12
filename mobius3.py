@@ -180,30 +180,10 @@ def Pool(
     async def log_response(response):
         logger.info('[http] Response: %s %s %s', response.request.method, response.request.url, response.status_code)
 
-    client = httpx.AsyncClient(
+    return httpx.AsyncClient(
         timeout=10.0, transport=httpx.AsyncHTTPTransport(retries=3, verify=get_ssl_context()),
         event_hooks={'request': [log_request], 'response': [log_response]}
     )
-
-    async def request(method, url, params=(), headers=(), content=empty_async_iterator()):
-
-        request = client.build_request(method, url, params=params, headers=headers, content=content)
-        response = await client.send(request, stream=True)
-
-        async def response_body():
-            try:
-                async for chunk in response.aiter_bytes():
-                    yield chunk
-            finally:
-                await response.aclose()
-
-        return (
-            response.status_code,
-            response.headers,
-            response_body(),
-        )
-
-    return request, client.aclose
 
 
 def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
@@ -272,7 +252,7 @@ def get_credentials_from_ecs_endpoint():
     pre_auth_headers = None
     expiration = datetime.datetime.fromtimestamp(0)
 
-    async def _get_credentials(request):
+    async def _get_credentials(client):
         nonlocal aws_access_key_id
         nonlocal aws_secret_access_key
         nonlocal pre_auth_headers
@@ -281,11 +261,11 @@ def get_credentials_from_ecs_endpoint():
         now = datetime.datetime.now()
 
         if now > expiration:
-            _, _, body = await request(
+            response = await client.request(
                 b'GET',
                 'http://169.254.170.2' + os.environ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI']
             )
-            creds = json.loads(await buffered(body))
+            creds = json.loads(response.content)
             aws_access_key_id = creds['AccessKeyId']
             aws_secret_access_key = creds['SecretAccessKey']
             expiration = datetime.datetime.strptime(creds['Expiration'], '%Y-%m-%dT%H:%M:%SZ')
@@ -399,27 +379,29 @@ def Syncer(
         'children': {},
     }
 
-    request, close_pool = get_pool()
+    client = get_pool()
 
-    def signed(request, credentials, service, region):
-        async def _signed(logger, method, url, params=(), headers=(), content=empty_async_iterator()):
+    async def all_headers(method, url, params=(), headers=()):
+        access_key_id, secret_access_key, auth_headers = await get_credentials(client)
+        content_hash = 'UNSIGNED-PAYLOAD'
+        parsed_url = urllib.parse.urlsplit(url)
 
-            content_hash = 'UNSIGNED-PAYLOAD'
-            access_key_id, secret_access_key, auth_headers = await credentials(request)
+        return aws_sigv4_headers(
+            access_key_id, secret_access_key, headers + auth_headers, 's3', region,
+            parsed_url.netloc, method.decode(), parsed_url.path, params, content_hash,
+        )
 
-            parsed_url = urllib.parse.urlsplit(url)
-            all_headers = aws_sigv4_headers(
-                access_key_id, secret_access_key, headers + auth_headers, service, region,
-                parsed_url.netloc, method.decode(), parsed_url.path, params, content_hash,
-            )
+    async def signed_request(logger, method, url, params=(), headers=(), content=empty_async_iterator()):
+        return await client.request(method, url, params=params,
+            headers=await all_headers(method, url, params, headers), content=content)
 
-            return await request(method, url, params=params, headers=all_headers, content=content)
-
-        return _signed
-
-    signed_request = signed(
-        request, credentials=get_credentials, service='s3', region=region,
-    )
+    @contextlib.asynccontextmanager
+    async def signed_stream(logger, method, url, params=(), headers=(), content=empty_async_iterator()):
+        async with client.stream(
+                method, url, params=params,
+                headers=await all_headers(method, url, params, headers), content=content
+        ) as response:
+            yield response
 
     def ensure_file_in_tree_cache(path):
         parent_dir = ensure_parent_dir_in_tree_cache(path)
@@ -561,7 +543,7 @@ def Syncer(
         stop_inotify()
         for task in upload_tasks:
             await cancel(task)
-        await close_pool()
+        await client.aclose()
         await asyncio.sleep(0)
         logger.info('Finished stopping')
 
@@ -1071,15 +1053,14 @@ def Syncer(
             remote_url = bucket_url + key
             headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
-            code, headers, body = await signed_request(
+            response = await signed_request(
                 logger, method, remote_url, headers=get_headers(), content=content)
-            logger.debug('%s %s', code, headers)
-            body_bytes = await buffered(body)
+            logger.debug('%s %s', response.status_code, response.headers)
 
-            if code not in [200, 204]:
-                raise Exception(code, body_bytes)
+            if response.status_code not in [200, 204]:
+                raise Exception(status_code, content)
 
-            on_done(path, headers)
+            on_done(path, response.headers)
 
     async def download_manager(logger):
         while True:
@@ -1128,10 +1109,9 @@ def Syncer(
                 # Since walking the filesystem can take time we might have a new file that we have
                 # recently uploaded that was not present when we request the original file list.
                 path = full_path.relative_to(directory)
-                code, _, body = await signed_request(
+                response = await signed_request(
                     logger, b'HEAD', bucket_url + prefix + str(path))
-                await buffered(body)
-                if code != 404:
+                if response.status_code != 404:
                     continue
 
                 # Check again if we have made modifications since the above request can take time
@@ -1166,10 +1146,9 @@ def Syncer(
                     continue
 
                 path = full_path.relative_to(directory)
-                code, _, body = await signed_request(
+                response = await signed_request(
                     logger, b'HEAD', bucket_url + prefix + str(path) + '/')
-                await buffered(body)
-                if code != 404:
+                if response.status_code != 404:
                     continue
 
                 try:
@@ -1197,11 +1176,10 @@ def Syncer(
 
             logger.info('Downloading: %s', full_path)
 
-            code, headers, body = await signed_request(logger, b'GET', bucket_url + prefix + path)
-            if True:  # To add a layer if indentation temporarily split a large diff
-                if code != 200:
-                    await buffered(body)  # Fetch all bytes and return to pool
-                    raise Exception(code)
+            async with signed_stream(logger, b'GET', bucket_url + prefix + path) as response:
+                if response.status_code != 200:
+                    await buffered(response.aiter_bytes())  # Fetch all bytes and return to pool
+                    raise Exception(response.status_code)
 
                 is_directory = path[-1] == '/'
 
@@ -1236,28 +1214,28 @@ def Syncer(
                         ignore_next_directory_upload[_dir] = True
 
                 try:
-                    modified = float(headers['x-amz-meta-mtime'])
+                    modified = float(response.headers['x-amz-meta-mtime'])
                 except (KeyError, ValueError):
                     modified = datetime.datetime.strptime(
-                        headers['last-modified'],
+                        response.headers['last-modified'],
                         '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
                 try:
-                    mode = int(headers['x-amz-meta-mode'])
+                    mode = int(response.headers['x-amz-meta-mode'])
                 except (KeyError, ValueError):
                     mode = None
 
                 is_symlink = mode and stat.S_ISLNK(mode)
 
                 if is_directory:
-                    await buffered(body)
+                    await buffered(response.aiter_bytes())
 
                     if is_dir_pull_blocked(full_path):
                         logger.debug('Recently changed locally, not changing: %s', full_path)
                         return
 
                     os.utime(full_path, (modified, modified))
-                    etags[full_path] = headers['etag']
+                    etags[full_path] = response.headers['etag']
 
                     # Ensure that subsequent renames will attempt to move the directory
                     ensure_dir_in_tree_cache(full_path)
@@ -1267,10 +1245,10 @@ def Syncer(
                 try:
                     if not is_symlink:
                         with open(temporary_path, 'wb') as file:
-                            async for chunk in body:
+                            async for chunk in response.aiter_bytes():
                                 file.write(chunk)
                     else:
-                        symlink_points_to = await buffered(body)
+                        symlink_points_to = await buffered(response.aiter_bytes())
                         os.symlink(symlink_points_to, temporary_path)
 
                     # May raise a FileNotFoundError if the directory no longer
@@ -1317,7 +1295,7 @@ def Syncer(
                         os.remove(temporary_path)
                     except FileNotFoundError:
                         pass
-                etags[full_path] = headers['etag']
+                etags[full_path] = response.headers['etag']
 
         download_job_queue.put_nowait((logger, download))
 
@@ -1328,13 +1306,12 @@ def Syncer(
                 ('list-type', '2'),
                 ('prefix', prefix),
             ) + extra_query_items
-            code, _, body = await signed_request(logger, b'GET', bucket_url, params=query)
-            body_bytes = await buffered(body)
-            if code != 200:
-                raise Exception(code, body_bytes)
+            response = await signed_request(logger, b'GET', bucket_url, params=query)
+            if response.status_code != 200:
+                raise Exception(response.status_code, response.content)
 
             namespace = '{http://s3.amazonaws.com/doc/2006-03-01/}'
-            root = ET.fromstring(body_bytes)
+            root = ET.fromstring(response.content)
             next_token = ''
             keys_relative = []
             for element in root:
