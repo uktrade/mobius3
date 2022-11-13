@@ -398,16 +398,7 @@ def Syncer(
 
             yield request
 
-    async def signed_request(method, url, params=(), headers=(), content=empty_async_iterator()):
-        return await client.request(
-            method, url, params=params, headers=headers, content=content, auth=AWSAuth())
-
-    @contextlib.asynccontextmanager
-    async def signed_stream(method, url, params=(), headers=(), content=empty_async_iterator()):
-        async with client.stream(
-                method, url, params=params, headers=headers, content=content, auth=AWSAuth(),
-        ) as response:
-            yield response
+    auth = AWSAuth()
 
     def ensure_file_in_tree_cache(path):
         parent_dir = ensure_parent_dir_in_tree_cache(path)
@@ -1059,7 +1050,7 @@ def Syncer(
             remote_url = bucket_url + key
             headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
-            response = await signed_request(method, remote_url, headers=get_headers(), content=content)
+            response = await client.request(method, remote_url, headers=get_headers(), content=content, auth=auth)
             logger.debug('%s %s', response.status_code, response.headers)
 
             if response.status_code not in [200, 204]:
@@ -1114,7 +1105,7 @@ def Syncer(
                 # Since walking the filesystem can take time we might have a new file that we have
                 # recently uploaded that was not present when we request the original file list.
                 path = full_path.relative_to(directory)
-                response = await signed_request(b'HEAD', bucket_url + prefix + str(path))
+                response = await client.request(b'HEAD', bucket_url + prefix + str(path), auth=auth)
                 if response.status_code != 404:
                     continue
 
@@ -1150,7 +1141,7 @@ def Syncer(
                     continue
 
                 path = full_path.relative_to(directory)
-                response = await signed_request(b'HEAD', bucket_url + prefix + str(path) + '/')
+                response = await client.request(b'HEAD', bucket_url + prefix + str(path) + '/', auth=auth)
                 if response.status_code != 404:
                     continue
 
@@ -1179,7 +1170,7 @@ def Syncer(
 
             logger.info('Downloading: %s', full_path)
 
-            async with signed_stream(b'GET', bucket_url + prefix + path) as response:
+            async with client.stream(b'GET', bucket_url + prefix + path, auth=auth) as response:
                 if response.status_code != 200:
                     await buffered(response.aiter_bytes())  # Fetch all bytes and return to pool
                     raise Exception(response.status_code)
@@ -1309,7 +1300,7 @@ def Syncer(
                 ('list-type', '2'),
                 ('prefix', prefix),
             ) + extra_query_items
-            response = await signed_request(b'GET', bucket_url, params=query)
+            response = await client.request(b'GET', bucket_url, params=query, auth=auth)
             if response.status_code != 200:
                 raise Exception(response.status_code, response.content)
 
