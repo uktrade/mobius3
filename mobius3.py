@@ -189,7 +189,7 @@ def Pool(
 def AWSAuth(service, region, client, get_credentials, content_hash=hashlib.sha256().hexdigest()):
 
     def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
-                          service, region, host, method, path, params, content_hash):
+                          host, method, path, params):
         algorithm = 'AWS4-HMAC-SHA256'
 
         now = datetime.datetime.utcnow()
@@ -251,8 +251,8 @@ def AWSAuth(service, region, client, get_credentials, content_hash=hashlib.sha25
             existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key.startswith('content-') or key.startswith('x-amz-'))
 
             headers_to_set = aws_sigv4_headers(
-                access_key_id, secret_access_key, existing_headers + auth_headers, service, region,
-                request.headers['host'], request.method, request.url.path, params, content_hash,
+                access_key_id, secret_access_key, existing_headers + auth_headers,
+                request.headers['host'], request.method, request.url.path, params,
             )
             for key, value in headers_to_set:
                 request.headers[key] = value
