@@ -243,7 +243,7 @@ def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
 
 
 class AWSAuth(httpx.Auth):
-    def __init__(self, service, region, client, get_credentials, content_hash):
+    def __init__(self, service, region, client, get_credentials, content_hash=hashlib.sha256().hexdigest()):
         self.service = service
         self.region = region
         self.client = client

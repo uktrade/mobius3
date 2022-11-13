@@ -2568,29 +2568,26 @@ async def get_credentials_from_environment(_):
 
 
 async def object_response(client, key, bucket='my-bucket'):
-    signed_request = signed(
-        client, credentials=get_credentials_from_environment,
-        service='s3', region='us-east-1',
-    )
-    return await signed_request(b'GET', f'https://minio:9000/{bucket}/{key}')
+    return await client.request(b'GET', f'https://minio:9000/{bucket}/{key}', auth=AWSAuth(
+        service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment
+    ))
 
 
 async def delete_object(client, key):
-    signed_request = signed(
-        client, credentials=get_credentials_from_environment,
-        service='s3', region='us-east-1',
-    )
-    return await signed_request(b'DELETE', f'https://minio:9000/my-bucket/{key}')
+    return await client.request(b'DELETE', f'https://minio:9000/my-bucket/{key}', auth=AWSAuth(
+        service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment
+    ))
 
 
 async def put_body(client, key, body):
-    signed_request = signed(
-        client, credentials=get_credentials_from_environment,
-        service='s3', region='us-east-1',
+    content_hash, hashed_content = await get_content_hash(streamed(body))
+    auth = AWSAuth(
+        service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment,
+        content_hash=content_hash
     )
-    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}', headers=(
+    return await client.request(b'PUT', f'https://minio:9000/my-bucket/{key}', headers=(
         ('content-length', str(len(body))),
-    ), content=streamed(body))
+    ), content=hashed_content, auth=auth)
 
 
 async def set_temporary_creds(client):
@@ -2630,21 +2627,21 @@ async def set_temporary_creds(client):
     if proc.returncode:
         raise Exception(stdout + stderr)
 
-    signed_request = signed(
-        client, credentials=new_user_creds,
-        service='sts', region='us-east-1',
-    )
     request_body_bytes = urllib.parse.urlencode((
         ('Action', 'AssumeRole'),
         ('Version', '2011-06-15'),
     )).encode('utf-8')
-    response = await signed_request(
+
+    content_hash, hashed_content = await get_content_hash(streamed(request_body_bytes))
+    auth = AWSAuth(service='sts', region='us-east-1', client=client, get_credentials=new_user_creds, content_hash=content_hash)
+    response = await client.request(
         b'POST', 'https://minio:9000/',
         headers=(
             ('content-type', 'application/x-www-form-urlencoded; charset=utf-8'),
             ('content-length', str(len(request_body_bytes))),
         ),
-        content=streamed(request_body_bytes),
+        content=hashed_content,
+        auth=auth
     )
 
     def xml(tag):
@@ -2680,13 +2677,3 @@ async def get_content_hash(content=empty_async_iterator()):
             yield chunk
 
     return content_hash.hexdigest(), hashed_content()
-
-
-def signed(client, credentials, service, region):
-
-    async def _signed(method, url, params=(), headers=(), content=empty_async_iterator()):
-        content_hash, hashed_content = await get_content_hash(content)
-        auth = AWSAuth(service=service, region=region, client=client, get_credentials=credentials, content_hash=content_hash)
-        return await client.request(method, url, params=params, headers=headers, content=hashed_content, auth=auth)
-
-    return _signed
