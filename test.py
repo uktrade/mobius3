@@ -2580,7 +2580,7 @@ async def delete_object(client, key):
 
 
 async def put_body(client, key, body):
-    content_hash, hashed_content = await get_content_hash(streamed(body))
+    content_hash, hashed_content = get_content_hash(body)
     auth = AWSAuth(
         service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment,
         content_hash=content_hash
@@ -2632,7 +2632,7 @@ async def set_temporary_creds(client):
         ('Version', '2011-06-15'),
     )).encode('utf-8')
 
-    content_hash, hashed_content = await get_content_hash(streamed(request_body_bytes))
+    content_hash, hashed_content = get_content_hash(request_body_bytes)
     auth = AWSAuth(service='sts', region='us-east-1', client=client, get_credentials=new_user_creds, content_hash=content_hash)
     response = await client.request(
         b'POST', 'https://minio:9000/',
@@ -2662,18 +2662,9 @@ async def set_temporary_creds(client):
     return creds
 
 
-async def get_content_hash(content=empty_async_iterator()):
-    content_hash = hashlib.sha256()
-    chunks = []
-
-    # The body must be buffered to get a hash before the request is
-    # initiated, but the chunks don't need to be concatanated together
-    async for chunk in content:
-        content_hash.update(chunk)
-        chunks.append(chunk)
+def get_content_hash(content=b''):
 
     async def hashed_content():
-        for chunk in chunks:
-            yield chunk
+        yield content
 
-    return content_hash.hexdigest(), hashed_content()
+    return hashlib.sha256(content).hexdigest(), hashed_content()
