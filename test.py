@@ -2665,24 +2665,28 @@ async def set_temporary_creds(client):
     return creds
 
 
+async def get_content_hash(content=empty_async_iterator()):
+    content_hash = hashlib.sha256()
+    chunks = []
+
+    # The body must be buffered to get a hash before the request is
+    # initiated, but the chunks don't need to be concatanated together
+    async for chunk in content:
+        content_hash.update(chunk)
+        chunks.append(chunk)
+
+    async def hashed_content():
+        for chunk in chunks:
+            yield chunk
+
+    return content_hash.hexdigest(), hashed_content()
+
+
 def signed(client, credentials, service, region):
 
     async def _signed(method, url, params=(), headers=(), content=empty_async_iterator()):
-
-        content_hash = hashlib.sha256()
-        chunks = []
-
-        # The body must be buffered to get a hash before the request is
-        # initiated, but the chunks don't need to be concatanated together
-        async for chunk in content:
-            content_hash.update(chunk)
-            chunks.append(chunk)
-
-        async def hashed_content():
-            for chunk in chunks:
-                yield chunk
-
-        auth = AWSAuth(service=service, region=region, client=client, get_credentials=credentials, content_hash=content_hash.hexdigest())
-        return await client.request(method, url, params=params, headers=headers, content=hashed_content(), auth=auth)
+        content_hash, hashed_content = await get_content_hash(content)
+        auth = AWSAuth(service=service, region=region, client=client, get_credentials=credentials, content_hash=content_hash)
+        return await client.request(method, url, params=params, headers=headers, content=hashed_content, auth=auth)
 
     return _signed
