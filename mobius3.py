@@ -189,7 +189,7 @@ def Pool(
 def AWSAuth(service, region, client, get_credentials, content_hash=hashlib.sha256().hexdigest()):
 
     def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
-                          host, method, path, params):
+                          method, path, params):
         algorithm = 'AWS4-HMAC-SHA256'
 
         now = datetime.datetime.utcnow()
@@ -202,7 +202,6 @@ def AWSAuth(service, region, client, get_credentials, content_hash=hashlib.sha25
             for header_key, header_value in pre_auth_headers
         )
         required_headers = (
-            ('host', host),
             ('x-amz-content-sha256', content_hash),
             ('x-amz-date', amzdate),
         )
@@ -241,19 +240,19 @@ def AWSAuth(service, region, client, get_credentials, content_hash=hashlib.sha25
              ),
             ('x-amz-date', amzdate),
             ('x-amz-content-sha256', content_hash),
-        ) + pre_auth_headers
+        )
 
     class _AWSAuth(httpx.Auth):
         async def async_auth_flow(self, request):
             access_key_id, secret_access_key, auth_headers = await get_credentials(client)
 
             params = tuple((key.decode(), value.decode()) for (key, value) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True))
-            existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key.startswith('content-') or key.startswith('x-amz-'))
+            existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key == 'host' or key.startswith('content-') or key.startswith('x-amz-'))
 
             headers_to_set = aws_sigv4_headers(
                 access_key_id, secret_access_key, existing_headers + auth_headers,
-                request.headers['host'], request.method, request.url.path, params,
-            )
+                request.method, request.url.path, params,
+            ) + auth_headers
             for key, value in headers_to_set:
                 request.headers[key] = value
 
