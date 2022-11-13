@@ -17,12 +17,12 @@ from aiohttp import (
     web,
 )
 from mobius3 import (
+    AWSAuth,
     Pool,
     Syncer,
     empty_async_iterator,
     streamed,
     buffered,
-    aws_sigv4_headers,
 )
 
 
@@ -2563,7 +2563,7 @@ async def object_code(client, key, bucket='my-bucket'):
     return (await object_response(client, key, bucket=bucket)).status_code
 
 
-async def get_credentials_from_environment():
+async def get_credentials_from_environment(_):
     return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
 
 
@@ -2594,13 +2594,13 @@ async def put_body(client, key, body):
 
 
 async def set_temporary_creds(client):
-    admin_access_key_id, admin_secret_access_key, _ = await get_credentials_from_environment()
+    admin_access_key_id, admin_secret_access_key, _ = await get_credentials_from_environment(client)
 
     # minio doesn't seem to be able to give temporary creds for the main user
     user_access_key_id = str(uuid.uuid4())[:8]
     user_secret_access_key = str(uuid.uuid4())[:8]
 
-    async def new_user_creds():
+    async def new_user_creds(_):
         return user_access_key_id, user_secret_access_key, ()
 
     proc = await asyncio.create_subprocess_exec(
@@ -2682,15 +2682,7 @@ def signed(client, credentials, service, region):
             for chunk in chunks:
                 yield chunk
 
-        access_key_id, secret_access_key, auth_headers = await credentials()
-
-        parsed_url = urllib.parse.urlsplit(url)
-        all_headers = aws_sigv4_headers(
-            access_key_id, secret_access_key,
-            headers + auth_headers, service, region,
-            parsed_url.netloc, method.decode(), parsed_url.path, params, content_hash.hexdigest(),
-        )
-
-        return await client.request(method, url, params=params, headers=all_headers, content=hashed_content())
+        auth = AWSAuth(service=service, region=region, client=client, get_credentials=credentials, content_hash=content_hash.hexdigest())
+        return await client.request(method, url, params=params, headers=headers, content=hashed_content(), auth=auth)
 
     return _signed
