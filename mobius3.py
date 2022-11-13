@@ -382,15 +382,20 @@ def Syncer(
     client = get_pool()
 
     class AWSAuth(httpx.Auth):
+        def __init__(self, region, client, get_credentials):
+            self.region = region
+            self.client = client
+            self.get_credentials = get_credentials
+
         async def async_auth_flow(self, request):
-            access_key_id, secret_access_key, auth_headers = await get_credentials(client)
+            access_key_id, secret_access_key, auth_headers = await self.get_credentials(self.client)
             content_hash = 'UNSIGNED-PAYLOAD'
 
             params = tuple((key.decode(), value.decode()) for (key, value) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True))
             existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key.startswith('content-') or key.startswith('x-amz-'))
 
             headers_to_set = aws_sigv4_headers(
-                access_key_id, secret_access_key, existing_headers + auth_headers, 's3', region,
+                access_key_id, secret_access_key, existing_headers + auth_headers, 's3', self.region,
                 request.headers['host'], request.method, request.url.path, params, content_hash,
             )
             for key, value in headers_to_set:
@@ -398,7 +403,7 @@ def Syncer(
 
             yield request
 
-    auth = AWSAuth()
+    auth = AWSAuth(region=region, client=client, get_credentials=get_credentials)
 
     def ensure_file_in_tree_cache(path):
         parent_dir = ensure_parent_dir_in_tree_cache(path)
