@@ -381,25 +381,31 @@ def Syncer(
 
     client = get_pool()
 
-    async def all_headers(method, url, params=(), headers=()):
-        access_key_id, secret_access_key, auth_headers = await get_credentials(client)
-        content_hash = 'UNSIGNED-PAYLOAD'
-        parsed_url = urllib.parse.urlsplit(url)
+    class AWSAuth(httpx.Auth):
+        async def async_auth_flow(self, request):
+            access_key_id, secret_access_key, auth_headers = await get_credentials(client)
+            content_hash = 'UNSIGNED-PAYLOAD'
 
-        return aws_sigv4_headers(
-            access_key_id, secret_access_key, headers + auth_headers, 's3', region,
-            parsed_url.netloc, method.decode(), parsed_url.path, params, content_hash,
-        )
+            params = tuple((key.decode(), value.decode()) for (key, value) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True))
+            existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key.startswith('content-') or key.startswith('x-amz-'))
+
+            headers_to_set = aws_sigv4_headers(
+                access_key_id, secret_access_key, existing_headers + auth_headers, 's3', region,
+                request.headers['host'], request.method, request.url.path, params, content_hash,
+            )
+            for key, value in headers_to_set:
+                request.headers[key] = value
+
+            yield request
 
     async def signed_request(method, url, params=(), headers=(), content=empty_async_iterator()):
-        return await client.request(method, url, params=params,
-            headers=await all_headers(method, url, params, headers), content=content)
+        return await client.request(
+            method, url, params=params, headers=headers, content=content, auth=AWSAuth())
 
     @contextlib.asynccontextmanager
     async def signed_stream(method, url, params=(), headers=(), content=empty_async_iterator()):
         async with client.stream(
-                method, url, params=params,
-                headers=await all_headers(method, url, params, headers), content=content
+                method, url, params=params, headers=headers, content=content, auth=AWSAuth(),
         ) as response:
             yield response
 
