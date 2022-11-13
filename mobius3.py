@@ -242,28 +242,25 @@ def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
     ) + pre_auth_headers
 
 
-class AWSAuth(httpx.Auth):
-    def __init__(self, service, region, client, get_credentials, content_hash=hashlib.sha256().hexdigest()):
-        self.service = service
-        self.region = region
-        self.client = client
-        self.get_credentials = get_credentials
-        self.content_hash = content_hash
+def AWSAuth(service, region, client, get_credentials, content_hash=hashlib.sha256().hexdigest()):
 
-    async def async_auth_flow(self, request):
-        access_key_id, secret_access_key, auth_headers = await self.get_credentials(self.client)
+    class _AWSAuth(httpx.Auth):
+        async def async_auth_flow(self, request):
+            access_key_id, secret_access_key, auth_headers = await get_credentials(client)
 
-        params = tuple((key.decode(), value.decode()) for (key, value) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True))
-        existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key.startswith('content-') or key.startswith('x-amz-'))
+            params = tuple((key.decode(), value.decode()) for (key, value) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True))
+            existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key.startswith('content-') or key.startswith('x-amz-'))
 
-        headers_to_set = aws_sigv4_headers(
-            access_key_id, secret_access_key, existing_headers + auth_headers, self.service, self.region,
-            request.headers['host'], request.method, request.url.path, params, self.content_hash,
-        )
-        for key, value in headers_to_set:
-            request.headers[key] = value
+            headers_to_set = aws_sigv4_headers(
+                access_key_id, secret_access_key, existing_headers + auth_headers, service, region,
+                request.headers['host'], request.method, request.url.path, params, content_hash,
+            )
+            for key, value in headers_to_set:
+                request.headers[key] = value
 
-        yield request
+            yield request
+
+    return _AWSAuth()
 
 
 async def get_credentials_from_environment(_):
