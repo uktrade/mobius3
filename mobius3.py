@@ -243,7 +243,8 @@ def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
 
 
 class AWSAuth(httpx.Auth):
-    def __init__(self, region, client, get_credentials, content_hash):
+    def __init__(self, service, region, client, get_credentials, content_hash):
+        self.service = service
         self.region = region
         self.client = client
         self.get_credentials = get_credentials
@@ -256,7 +257,7 @@ class AWSAuth(httpx.Auth):
         existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key.startswith('content-') or key.startswith('x-amz-'))
 
         headers_to_set = aws_sigv4_headers(
-            access_key_id, secret_access_key, existing_headers + auth_headers, 's3', self.region,
+            access_key_id, secret_access_key, existing_headers + auth_headers, self.service, self.region,
             request.headers['host'], request.method, request.url.path, params, self.content_hash,
         )
         for key, value in headers_to_set:
@@ -403,7 +404,7 @@ def Syncer(
     }
 
     client = get_pool()
-    auth = AWSAuth(region=region, client=client, get_credentials=get_credentials, content_hash='UNSIGNED-PAYLOAD')
+    auth = AWSAuth(service='s3', region=region, client=client, get_credentials=get_credentials, content_hash='UNSIGNED-PAYLOAD')
 
     def ensure_file_in_tree_cache(path):
         parent_dir = ensure_parent_dir_in_tree_cache(path)
