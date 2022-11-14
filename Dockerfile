@@ -1,16 +1,17 @@
-FROM alpine:3.10
+FROM alpine:3.16
 
 COPY requirements.txt /app/
 RUN \
 	apk add --no-cache \
+		py3-pip \
 		python3 && \
-	pip3 install \
+	pip install \
 		-r /app/requirements.txt
 
 COPY LICENSE README.md mobius3.py setup.py /app/
 RUN \
-	pip3 install /app && \
-	pip3 check
+	pip install /app && \
+	pip check
 
 RUN \
 	addgroup -S mobius3 && \

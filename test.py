@@ -1,8 +1,8 @@
-
 import asyncio
 from datetime import (
     datetime,
 )
+import hashlib
 import json
 import os
 import re
@@ -13,56 +13,36 @@ import unittest
 import urllib.parse
 import uuid
 
-from aiodnsresolver import (
-    Resolver,
-)
 from aiohttp import (
     web,
 )
-from lowhaio import (
-    Pool,
-    buffered,
-    streamed,
-)
-from lowhaio_aws_sigv4 import (
-    signed,
-)
 from mobius3 import (
+    AWSAuth,
+    Pool,
     Syncer,
+    empty_async_iterator,
+    streamed,
+    buffered,
 )
 
 
-def async_test(func):
-    def wrapper(*args, **kwargs):
-        future = func(*args, **kwargs)
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(future)
-    return wrapper
+class TestIntegration(unittest.IsolatedAsyncioTestCase):
 
-
-class TestIntegration(unittest.TestCase):
-
-    def add_async_cleanup(self, coroutine, *args):
-        loop = asyncio.get_event_loop()
-        self.addCleanup(loop.run_until_complete, coroutine(*args))
-
-    @async_test
     async def test_download_file_at_start_then_upload(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         filename_1 = str(uuid.uuid4())
-        code, headers, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
-        self.assertEqual(code, b'200')
-        await buffered(body)
+        response = await put_body(client, f'prefix/{filename_1}', b'some-bytes')
+        self.assertEqual(response.status_code, 200)
 
-        date = dict((key.lower(), value) for key, value in headers)[b'date']
-        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+        date = response.headers['date']
+        date_ts = datetime.strptime(date, '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
         # Make sure time progresses at least one second, to test that there
         # is some code setting mtime
@@ -84,30 +64,27 @@ class TestIntegration(unittest.TestCase):
 
         await stop()
 
-        self.assertEqual(await object_body(request, f'prefix/{filename_2}'), b'more-bytes')
+        self.assertEqual(await object_body(client, f'prefix/{filename_2}'), b'more-bytes')
 
-    @async_test
     async def test_download_nested_files_at_start(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         filename_1 = str(uuid.uuid4())
         filename_2 = str(uuid.uuid4())
         directory = str(uuid.uuid4())
-        code, _, body = await put_body(request, f'prefix/{directory}/{filename_1}', b'some-bytes')
-        self.assertEqual(code, b'200')
-        await buffered(body)
-        code, _, body = await put_body(request, f'prefix/{directory}/{filename_2}', b'more-bytes')
-        self.assertEqual(code, b'200')
-        await buffered(body)
+        response = await put_body(client, f'prefix/{directory}/{filename_1}', b'some-bytes')
+        self.assertEqual(response.status_code, 200)
+        response = await put_body(client, f'prefix/{directory}/{filename_2}', b'more-bytes')
+        self.assertEqual(response.status_code, 200)
 
         start, stop = syncer_for('/s3-home-folder', prefix='prefix/')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
 
         await start()
 
@@ -118,12 +95,11 @@ class TestIntegration(unittest.TestCase):
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'more-bytes')
 
-    @async_test
     async def test_exclude_local_after_start(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for(
             '/s3-home-folder',
@@ -131,7 +107,7 @@ class TestIntegration(unittest.TestCase):
             local_modification_persistance=1,
             download_interval=1,
         )
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename_1 = str(uuid.uuid4())
@@ -148,42 +124,39 @@ class TestIntegration(unittest.TestCase):
 
         await asyncio.sleep(2)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename_1), b'some-bytes-a')
-        self.assertEqual(await object_code(request, filename_2), b'404')
-        self.assertEqual(await object_code(request, f'{dirname_1}/{filename_3}'), b'404')
+        self.assertEqual(await object_body(client, filename_1), b'some-bytes-a')
+        self.assertEqual(await object_code(client, filename_2), 404)
+        self.assertEqual(await object_code(client, f'{dirname_1}/{filename_3}'), 404)
 
         # Minio seems to return a 200 for all folders, but this _should_ assertEqual for S3 proper
-        # self.assertEqual(await object_code(request, f'{dirname_1}/'), b'404')
+        # self.assertEqual(await object_code(request, f'{dirname_1}/'), 404)
 
         self.assertTrue(os.path.exists(f'/s3-home-folder/{filename_2}'))
 
-    @async_test
     async def test_exclude_remote_at_start(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         filename_1 = str(uuid.uuid4())
         filename_2 = str(uuid.uuid4())
         directory = str(uuid.uuid4())
-        code, _, body = await put_body(request, f'prefix/{filename_1}/.checkpoints/check_1',
-                                       b'some-inner-bytes')
-        self.assertEqual(code, b'200')
-        await buffered(body)
-        code, _, body = await put_body(request, f'prefix/{directory}/{filename_2}', b'more-bytes')
-        self.assertEqual(code, b'200')
-        await buffered(body)
+        response = await put_body(client, f'prefix/{filename_1}/.checkpoints/check_1',
+                                  b'some-inner-bytes')
+        self.assertEqual(response.status_code, 200)
+        response = await put_body(client, f'prefix/{directory}/{filename_2}', b'more-bytes')
+        self.assertEqual(response.status_code, 200)
 
         start, stop = syncer_for('/s3-home-folder', prefix='prefix/',
                                  exclude_remote=re.compile(r'.*\.checkpoints/.*'))
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
 
         await start()
 
@@ -193,31 +166,28 @@ class TestIntegration(unittest.TestCase):
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'more-bytes')
 
-    @async_test
     async def test_download_file_after_start(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         start, stop = syncer_for(
             '/s3-home-folder', prefix='prefix/',
             download_interval=1)
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
 
         await start()
 
         filename_1 = str(uuid.uuid4())
-        code, headers, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
-        self.assertEqual(code, b'200')
+        response = await put_body(client, f'prefix/{filename_1}', b'some-bytes')
+        self.assertEqual(response.status_code, 200)
 
-        date = dict((key.lower(), value) for key, value in headers)[b'date']
-        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
-
-        await buffered(body)
+        date = response.headers['date']
+        date_ts = datetime.strptime(date, '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
         await asyncio.sleep(2)
 
@@ -233,36 +203,33 @@ class TestIntegration(unittest.TestCase):
         # the correct mtime
         self.assertEqual(date_ts, os.path.getmtime(f'/s3-home-folder/{filename_1}'))
 
-    @async_test
     async def test_download_file_after_start_with_existing_prefix_object(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         # We want to ensure nothing bad happens if the remote prefix object
         # exists [essentially, we ignore this object]
         delete_prefix_dir = create_directory('/test-data/my-bucket/prefix')
-        self.add_async_cleanup(delete_prefix_dir)
+        self.addAsyncCleanup(delete_prefix_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         start, stop = syncer_for(
             '/s3-home-folder', prefix='prefix/',
             download_interval=1)
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
 
         await start()
 
         filename_1 = str(uuid.uuid4())
-        code, headers, body = await put_body(request, f'prefix/{filename_1}', b'some-bytes')
-        self.assertEqual(code, b'200')
+        response = await put_body(client, f'prefix/{filename_1}', b'some-bytes')
+        self.assertEqual(response.status_code, 200)
 
-        date = dict((key.lower(), value) for key, value in headers)[b'date']
-        date_ts = datetime.strptime(date.decode(), '%a, %d %b %Y %H:%M:%S %Z').timestamp()
-
-        await buffered(body)
+        date = response.headers['date']
+        date_ts = datetime.strptime(date, '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
         await asyncio.sleep(2)
 
@@ -278,40 +245,37 @@ class TestIntegration(unittest.TestCase):
         # the correct mtime
         self.assertEqual(date_ts, os.path.getmtime(f'/s3-home-folder/{filename_1}'))
 
-    @async_test
     async def test_download_nested_file_after_start(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         start, stop = syncer_for(
             '/s3-home-folder', prefix='prefix/',
             download_interval=1)
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
 
         await start()
 
         dirname_1 = str(uuid.uuid4())
         filename_1 = str(uuid.uuid4())
-        code, headers, body = await put_body(
-            request, f'prefix/{dirname_1}/{filename_1}',
+        response = await put_body(
+            client, f'prefix/{dirname_1}/{filename_1}',
             b'some-bytes')
-        self.assertEqual(code, b'200')
-        await buffered(body)
-        date = dict((key.lower(), value) for key, value in headers)[b'date']
+        self.assertEqual(response.status_code, 200)
+        date = response.headers['date']
 
         await asyncio.sleep(2)
 
         # Ensure the modified date stays the same to check that a second upload
         # has not occured
-        code, headers, body = await object_triple(request, f'prefix/{dirname_1}/{filename_1}')
-        self.assertEqual(code, b'200')
-        await buffered(body)
-        modified = dict((key.lower(), value) for key, value in headers)[b'last-modified']
+        response = await object_response(client, f'prefix/{dirname_1}/{filename_1}')
+        self.assertEqual(response.status_code, 200)
+        modified = response.headers['last-modified']
         self.assertEqual(modified, date)
 
         with open(f'/s3-home-folder/{dirname_1}/{filename_1}', 'rb') as file:
@@ -324,23 +288,17 @@ class TestIntegration(unittest.TestCase):
 
         await asyncio.sleep(2)
 
-        self.assertEqual(await object_code(request, f'prefix/{dirname_1}/{filename_1}'), b'404')
+        self.assertEqual(await object_code(client, f'prefix/{dirname_1}/{filename_1}'), 404)
         self.assertEqual(await object_body(
-            request, f'prefix/{dirname_2}/{filename_1}'), b'some-bytes')
+            client, f'prefix/{dirname_2}/{filename_1}'), b'some-bytes')
 
-    @async_test
     async def test_download_directory_after_start(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         dirname_1 = str(uuid.uuid4())
         dirname_2 = str(uuid.uuid4())
         dirname_3 = str(uuid.uuid4())
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-        )
-        self.add_async_cleanup(stop)
 
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
@@ -384,10 +342,14 @@ class TestIntegration(unittest.TestCase):
         ])
         runner = web.AppRunner(app)
         await runner.setup()
-        self.add_async_cleanup(runner.cleanup)
+        self.addAsyncCleanup(runner.cleanup)
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+        )
+        self.addAsyncCleanup(stop)
         await start()
 
         with open(f'/s3-home-folder/{dirname_1}/some-file', 'rb') as file:
@@ -399,22 +361,15 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(os.path.getmtime(f'/s3-home-folder/{dirname_2}/{dirname_3}'),
                          1557471197.0)
 
-    @async_test
     async def test_download_directory_in_prefix_after_start(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         dirname_1 = str(uuid.uuid4())
         dirname_2 = str(uuid.uuid4())
         dirname_3 = str(uuid.uuid4())
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-            prefix='prefix/'
-        )
-        self.add_async_cleanup(stop)
 
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
@@ -463,10 +418,15 @@ class TestIntegration(unittest.TestCase):
         ])
         runner = web.AppRunner(app)
         await runner.setup()
-        self.add_async_cleanup(runner.cleanup)
+        self.addAsyncCleanup(runner.cleanup)
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            prefix='prefix/'
+        )
+        self.addAsyncCleanup(stop)
         await start()
 
         with open(f'/s3-home-folder/{dirname_1}/some-file', 'rb') as file:
@@ -478,18 +438,12 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(os.path.getmtime(f'/s3-home-folder/{dirname_2}/{dirname_3}'),
                          1557471197.0)
 
-    @async_test
     async def test_download_in_nested_directory_at_start(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         dirname_1 = str(uuid.uuid4())
         dirname_2 = str(uuid.uuid4())
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-        )
-        self.add_async_cleanup(stop)
 
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
@@ -532,20 +486,23 @@ class TestIntegration(unittest.TestCase):
         ])
         runner = web.AppRunner(app)
         await runner.setup()
-        self.add_async_cleanup(runner.cleanup)
+        self.addAsyncCleanup(runner.cleanup)
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+        )
+        self.addAsyncCleanup(stop)
         await start()
 
         with open(f'/s3-home-folder/{dirname_1}/{dirname_2}/some-file', 'rb') as file:
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'some-bytes')
 
-    @async_test
     async def test_delete_downloaded_directory(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         dirname_1 = str(uuid.uuid4())
         dirname_2 = str(uuid.uuid4())
@@ -569,13 +526,6 @@ class TestIntegration(unittest.TestCase):
             'etag': '"fba9dede5f27731c9771645a39863328"',
         }
 
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-            local_modification_persistance=1,
-            download_interval=1,
-        )
-        self.add_async_cleanup(stop)
-
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
         async def handle_list(_):
@@ -592,10 +542,16 @@ class TestIntegration(unittest.TestCase):
         ])
         runner = web.AppRunner(app)
         await runner.setup()
-        self.add_async_cleanup(runner.cleanup)
+        self.addAsyncCleanup(runner.cleanup)
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            local_modification_persistance=1,
+            download_interval=1,
+        )
+        self.addAsyncCleanup(stop)
         await start()
 
         self.assertTrue(os.path.isdir(f'/s3-home-folder/{dirname_1}/{dirname_2}'))
@@ -611,10 +567,9 @@ class TestIntegration(unittest.TestCase):
 
         self.assertFalse(os.path.exists(f'/s3-home-folder/{dirname_1}'))
 
-    @async_test
     async def test_delete_existing_file_after_initial_download(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         # This _should_ end up deleted, but not until we've saved the remote
         # files locally
@@ -624,12 +579,6 @@ class TestIntegration(unittest.TestCase):
 
         # Ensure the file has not been modified within local_modification_persistance
         await asyncio.sleep(1)
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-            local_modification_persistance=1,
-        )
-        self.add_async_cleanup(stop)
 
         filename_remote = str(uuid.uuid4())
 
@@ -657,10 +606,15 @@ class TestIntegration(unittest.TestCase):
         ])
         runner = web.AppRunner(app)
         await runner.setup()
-        self.add_async_cleanup(runner.cleanup)
+        self.addAsyncCleanup(runner.cleanup)
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            local_modification_persistance=1,
+        )
+        self.addAsyncCleanup(stop)
         asyncio.create_task(start())
 
         # We have a slow initial download, during which the existing file
@@ -676,10 +630,9 @@ class TestIntegration(unittest.TestCase):
         self.assertFalse(os.path.exists(f'/s3-home-folder/{filename_local}'))
         self.assertTrue(os.path.exists(f'/s3-home-folder/{filename_remote}'))
 
-    @async_test
     async def test_nested_delete_downloaded_directory(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         dirname_1 = str(uuid.uuid4())
         dirname_2 = str(uuid.uuid4())
@@ -708,13 +661,6 @@ class TestIntegration(unittest.TestCase):
             'last-modified': 'Fri, 10 May 2019 06:53:17 GMT',
             'etag': '"fba9dede5f27731c9771645a39863328"',
         }
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-            local_modification_persistance=1,
-            download_interval=1,
-        )
-        self.add_async_cleanup(stop)
 
         # minio does not support keys with trailing slashes, so we fire up our
         # own mock S3
@@ -746,10 +692,16 @@ class TestIntegration(unittest.TestCase):
         ])
         runner = web.AppRunner(app)
         await runner.setup()
-        self.add_async_cleanup(runner.cleanup)
+        self.addAsyncCleanup(runner.cleanup)
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+            local_modification_persistance=1,
+            download_interval=1,
+        )
+        self.addAsyncCleanup(stop)
         await start()
 
         self.assertTrue(os.path.isdir(
@@ -767,22 +719,21 @@ class TestIntegration(unittest.TestCase):
 
         self.assertFalse(os.path.exists(f'/s3-home-folder/{dirname_1}'))
 
-    @async_test
     async def test_download_file_not_done_during_local_persistance(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         start, stop = syncer_for(
             '/s3-home-folder', prefix='prefix/',
             local_modification_persistance=4,
             download_interval=1,
         )
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
 
         await start()
 
@@ -795,9 +746,8 @@ class TestIntegration(unittest.TestCase):
         await asyncio.sleep(1)
 
         # The remote file is overridden
-        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-remote-bytes')
-        self.assertEqual(code, b'200')
-        await buffered(body)
+        response = await put_body(client, f'prefix/{filename_1}', b'some-remote-bytes')
+        self.assertEqual(response.status_code, 200)
 
         # Ensure that the local file is not yet overridden
         await asyncio.sleep(2)
@@ -812,30 +762,28 @@ class TestIntegration(unittest.TestCase):
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'some-remote-bytes')
 
-    @async_test
     async def test_download_file_repeated_remote_changes(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         start, stop = syncer_for(
             '/s3-home-folder', prefix='prefix/',
             download_interval=1,
             local_modification_persistance=1
         )
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
 
         await start()
 
         filename_1 = str(uuid.uuid4())
 
-        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-remote-bytes-a')
-        self.assertEqual(code, b'200')
-        await buffered(body)
+        response = await put_body(client, f'prefix/{filename_1}', b'some-remote-bytes-a')
+        self.assertEqual(response.status_code, 200)
 
         # Ensure that the local file isoverridden
         await asyncio.sleep(2)
@@ -844,9 +792,8 @@ class TestIntegration(unittest.TestCase):
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'some-remote-bytes-a')
 
-        code, _, body = await put_body(request, f'prefix/{filename_1}', b'some-remote-bytes-b')
-        self.assertEqual(code, b'200')
-        await buffered(body)
+        response = await put_body(client, f'prefix/{filename_1}', b'some-remote-bytes-b')
+        self.assertEqual(response.status_code, 200)
 
         # Ensure that the local file is overritten
         await asyncio.sleep(2)
@@ -855,15 +802,14 @@ class TestIntegration(unittest.TestCase):
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'some-remote-bytes-b')
 
-    @async_test
     async def test_single_small_file_uploaded(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -872,21 +818,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'some-bytes')
+        self.assertEqual(await object_body(client, filename), b'some-bytes')
 
-    @async_test
     async def test_hard_linked_file_uploaded_if_matches_upload_on_create(self):
         # This is to simulate how git creates pack files
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder', upload_on_create=r'.*_link')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -899,22 +844,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, f'{filename}_link'), b'some-bytes')
-        self.assertEqual(await object_code(request, f'{filename}_nomatchlink'), b'404')
+        self.assertEqual(await object_body(client, f'{filename}_link'), b'some-bytes')
+        self.assertEqual(await object_code(client, f'{filename}_nomatchlink'), 404)
 
-
-    @async_test
     async def test_symlinks_uploaded_on_create(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -949,25 +892,24 @@ class TestIntegration(unittest.TestCase):
 
         await asyncio.sleep(1)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, 'file_link'), f'/s3-home-folder/{filename}'.encode('utf-8'))
-        self.assertEqual(await object_body(request, 'dir_link'), f'/s3-home-folder/{dir_name}'.encode('utf-8'))
-        self.assertEqual(await object_body(request, 'file_in_dir_link'), f'/s3-home-folder/{dir_name}/{filename_2}'.encode('utf-8'))
-        self.assertEqual(await object_body(request, 'symlinked_dir_link'), '/s3-home-folder/dir_link'.encode('utf-8'))
-        self.assertEqual(await object_body(request, 'file_in_symlinked_dir_link'), f'/s3-home-folder/symlinked_dir_link/{filename_2}'.encode('utf-8'))
-        self.assertEqual(await object_body(request, 'bad_file_link'), '/s3-home-folder/bad_file'.encode('utf-8'))
-        self.assertEqual(await object_body(request, 'bad_dir_link'), '/s3-home-folder/bad_dir'.encode('utf-8'))
-        self.assertEqual(await object_body(request, 'loop_link'), '/s3-home-folder/loop_link'.encode('utf-8'))
-        self.assertEqual(await object_body(request, 'cake_link'), '/s3-home-folder/🍰'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'file_link'), f'/s3-home-folder/{filename}'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'dir_link'), f'/s3-home-folder/{dir_name}'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'file_in_dir_link'), f'/s3-home-folder/{dir_name}/{filename_2}'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'symlinked_dir_link'), '/s3-home-folder/dir_link'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'file_in_symlinked_dir_link'), f'/s3-home-folder/symlinked_dir_link/{filename_2}'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'bad_file_link'), '/s3-home-folder/bad_file'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'bad_dir_link'), '/s3-home-folder/bad_dir'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'loop_link'), '/s3-home-folder/loop_link'.encode('utf-8'))
+        self.assertEqual(await object_body(client, 'cake_link'), '/s3-home-folder/🍰'.encode('utf-8'))
 
-    @async_test
     async def test_symlinks_are_preserved(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop_a = syncer_for('/s3-home-folder')
         stopped = False
@@ -978,7 +920,7 @@ class TestIntegration(unittest.TestCase):
                 return
             stopped = True
             await stop_a()
-        self.add_async_cleanup(stop_once)
+        self.addAsyncCleanup(stop_once)
         await start()
 
         filename = str(uuid.uuid4())
@@ -993,12 +935,12 @@ class TestIntegration(unittest.TestCase):
         await delete_dir()
 
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         await asyncio.sleep(1)
 
         start, stop_b = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop_b)
+        self.addAsyncCleanup(stop_b)
         await start()
 
         await asyncio.sleep(1)
@@ -1013,20 +955,14 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(points_to, f'/s3-home-folder/{filename}')
         self.assertEqual(mtime_1, mtime_2)
 
-    @async_test
     async def test_directory_uploaded_after_start_then_manipulated(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         dirname_1 = str(uuid.uuid4())
         dirname_2 = str(uuid.uuid4())
         dirname_3 = str(uuid.uuid4())
         dirname_4 = str(uuid.uuid4())
-
-        start, stop = Syncer(
-            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
-        )
-        self.add_async_cleanup(stop)
 
         async def handle_list(_):
             body = f'''<?xml version="1.0" encoding="UTF-8"?>
@@ -1064,10 +1000,14 @@ class TestIntegration(unittest.TestCase):
         ])
         runner = web.AppRunner(app)
         await runner.setup()
-        self.add_async_cleanup(runner.cleanup)
+        self.addAsyncCleanup(runner.cleanup)
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
 
+        start, stop = Syncer(
+            '/s3-home-folder', 'my-bucket', 'http://localhost:8080/{}/', 'us-east-1',
+        )
+        self.addAsyncCleanup(stop)
         await start()
 
         os.mkdir(f'/s3-home-folder/{dirname_1}')
@@ -1091,15 +1031,14 @@ class TestIntegration(unittest.TestCase):
         self.assertIn(f'/my-bucket/{dirname_4}/', put_paths)
         self.assertIn(f'/my-bucket/{dirname_4}/{dirname_3}/', put_paths)
 
-    @async_test
     async def test_single_medium_file_uploaded(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1109,21 +1048,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), contents)
+        self.assertEqual(await object_body(client, filename), contents)
 
-    @async_test
     async def test_larger_numbers_of_files(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder',
                                  local_modification_persistance=2, download_interval=1)
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filenames_contents = sorted([
@@ -1139,14 +1077,13 @@ class TestIntegration(unittest.TestCase):
 
         await asyncio.sleep(4)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
         for filename, contents in filenames_contents:
-            self.assertEqual(await object_body(request, filename), contents)
+            self.assertEqual(await object_body(client, filename), contents)
 
         last_filename = filenames_contents[-1][0]
-        _, _, body = await put_body(request, last_filename, b'some-bytes')
-        await buffered(body)
+        await put_body(client, last_filename, b'some-bytes')
 
         await asyncio.sleep(7)
 
@@ -1154,16 +1091,15 @@ class TestIntegration(unittest.TestCase):
             body_bytes = file.read()
         self.assertEqual(body_bytes, b'some-bytes')
 
-    @async_test
     async def test_files_deleted_remotely(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder',
                                  local_modification_persistance=1, download_interval=1)
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filenames_contents = sorted([
@@ -1181,10 +1117,9 @@ class TestIntegration(unittest.TestCase):
 
         last_filename = filenames_contents[-1][0]
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
-        _, _, body = await delete_object(request, f'{last_filename}')
-        await buffered(body)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
+        await delete_object(client, f'{last_filename}')
 
         await asyncio.sleep(2)
 
@@ -1195,12 +1130,11 @@ class TestIntegration(unittest.TestCase):
 
         self.assertFalse(os.path.exists(f'/s3-home-folder/{last_filename}'))
 
-    @async_test
     async def test_file_upload_preserves_mtime(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop_a = syncer_for('/s3-home-folder')
         stopped = False
@@ -1211,7 +1145,7 @@ class TestIntegration(unittest.TestCase):
                 return
             stopped = True
             await stop_a()
-        self.add_async_cleanup(stop_once)
+        self.addAsyncCleanup(stop_once)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1224,12 +1158,12 @@ class TestIntegration(unittest.TestCase):
         await delete_dir()
 
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         await asyncio.sleep(1)
 
         start, stop_b = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop_b)
+        self.addAsyncCleanup(stop_b)
         await start()
 
         await asyncio.sleep(1)
@@ -1238,12 +1172,11 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(mtime_1, mtime_2)
 
-    @async_test
     async def test_file_upload_preserves_mode_on_create(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop_a = syncer_for('/s3-home-folder')
         stopped = False
@@ -1254,7 +1187,7 @@ class TestIntegration(unittest.TestCase):
                 return
             stopped = True
             await stop_a()
-        self.add_async_cleanup(stop_once)
+        self.addAsyncCleanup(stop_once)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1269,10 +1202,10 @@ class TestIntegration(unittest.TestCase):
         await delete_dir()
 
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         start, stop_b = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop_b)
+        self.addAsyncCleanup(stop_b)
         await start()
 
         await asyncio.sleep(1)
@@ -1281,12 +1214,11 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(mode, 0o100600)
 
-    @async_test
     async def test_file_upload_preserves_mode_after_create(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop_a = syncer_for('/s3-home-folder')
         stopped = False
@@ -1297,7 +1229,7 @@ class TestIntegration(unittest.TestCase):
                 return
             stopped = True
             await stop_a()
-        self.add_async_cleanup(stop_once)
+        self.addAsyncCleanup(stop_once)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1312,12 +1244,12 @@ class TestIntegration(unittest.TestCase):
         await delete_dir()
 
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         await asyncio.sleep(1)
 
         start, stop_b = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop_b)
+        self.addAsyncCleanup(stop_b)
         await start()
 
         await asyncio.sleep(1)
@@ -1326,20 +1258,18 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(mode, 0o100600)
 
-    @async_test
     async def test_file_download_then_upload_preserves_mode(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         filename = str(uuid.uuid4())
-        code, _, body = await put_body(request, filename, b'some-bytes')
-        self.assertEqual(code, b'200')
-        await buffered(body)
+        response = await put_body(client, filename, b'some-bytes')
+        self.assertEqual(response.status_code, 200)
 
         start, stop_a = syncer_for('/s3-home-folder')
         stopped = False
@@ -1350,7 +1280,7 @@ class TestIntegration(unittest.TestCase):
                 return
             stopped = True
             await stop_a()
-        self.add_async_cleanup(stop_once)
+        self.addAsyncCleanup(stop_once)
         await start()
 
         # filename = str(uuid.uuid4())
@@ -1365,12 +1295,12 @@ class TestIntegration(unittest.TestCase):
         await delete_dir()
 
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
 
         await asyncio.sleep(1)
 
         start, stop_b = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop_b)
+        self.addAsyncCleanup(stop_b)
         await start()
 
         await asyncio.sleep(1)
@@ -1379,15 +1309,14 @@ class TestIntegration(unittest.TestCase):
 
         self.assertEqual(mode, 0o100600)
 
-    @async_test
     async def test_single_small_file_uploaded_emoji(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4()) + '_🍰'
@@ -1396,20 +1325,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'some-bytes')
+        self.assertEqual(await object_body(client, filename), b'some-bytes')
 
-    @async_test
     async def test_single_empty_file_uploaded(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1418,20 +1346,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'')
+        self.assertEqual(await object_body(client, filename), b'')
 
-    @async_test
     async def test_file_inside_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         directory_name = str(uuid.uuid4())
@@ -1445,20 +1372,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, f'{directory_name}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_body(client, f'{directory_name}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_file_inside_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         directory_name = str(uuid.uuid4())
@@ -1470,20 +1396,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, f'{directory_name}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_body(client, f'{directory_name}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_file_inside_nested_directory_immediate_after_previous_deleted(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         directory_1 = str(uuid.uuid4())
@@ -1498,20 +1423,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, f'{directory_2}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_body(client, f'{directory_2}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_nested_file_inside_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         directory_1 = str(uuid.uuid4())
@@ -1525,18 +1449,17 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        body_bytes = await object_body(request, f'{directory_1}/{directory_2}/{filename}')
+        body_bytes = await object_body(client, f'{directory_1}/{directory_2}/{filename}')
         self.assertEqual(body_bytes, b'some-bytes')
 
-    @async_test
     async def test_file_uploaded_after_stop(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         await start()
@@ -1547,20 +1470,19 @@ class TestIntegration(unittest.TestCase):
 
         await stop()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'\x00' * 10000000)
+        self.assertEqual(await object_body(client, filename), b'\x00' * 10000000)
 
-    @async_test
     async def test_file_closed_half_way_through_with_no_modification(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1575,20 +1497,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'\x00' * 10000000)
+        self.assertEqual(await object_body(client, filename), b'\x00' * 10000000)
 
-    @async_test
     async def test_file_modified_and_closed_half_way_through(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1603,20 +1524,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'\x01' * 10000000)
+        self.assertEqual(await object_body(client, filename), b'\x01' * 10000000)
 
-    @async_test
     async def test_file_changed_half_way_through_no_close_then_close(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1631,23 +1551,22 @@ class TestIntegration(unittest.TestCase):
 
             await await_upload()
 
-            request, close = get_docker_link_and_minio_compatible_http_pool()
-            self.add_async_cleanup(close)
+            client = get_docker_link_and_minio_compatible_http_pool()
+            self.addAsyncCleanup(client.aclose)
 
-            self.assertEqual(await object_code(request, filename), b'404')
+            self.assertEqual(await object_code(client, filename), 404)
 
         await await_upload()
-        self.assertEqual(await object_body(request, filename), b'\x01' * 10000000)
+        self.assertEqual(await object_body(client, filename), b'\x01' * 10000000)
 
-    @async_test
     async def test_single_small_file_deleted_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1660,20 +1579,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, filename), b'404')
+        self.assertEqual(await object_code(client, filename), 404)
 
-    @async_test
     async def test_single_small_file_deleted_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename = str(uuid.uuid4())
@@ -1684,20 +1602,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, filename), b'404')
+        self.assertEqual(await object_code(client, filename), 404)
 
-    @async_test
     async def test_single_small_file_parent_directory_deleted_then_recreated_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname = str(uuid.uuid4())
@@ -1715,20 +1632,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, f'{dirname}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_body(client, f'{dirname}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_single_small_file_parent_directory_deleted_then_recreated_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname = str(uuid.uuid4())
@@ -1748,20 +1664,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, f'{dirname}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_body(client, f'{dirname}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_file_in_renamed_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname_1 = str(uuid.uuid4())
@@ -1779,21 +1694,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, f'{dirname_1}/{filename}'), b'404')
-        self.assertEqual(await object_body(request, f'{dirname_2}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_code(client, f'{dirname_1}/{filename}'), 404)
+        self.assertEqual(await object_body(client, f'{dirname_2}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_file_in_renamed_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname_1 = str(uuid.uuid4())
@@ -1809,21 +1723,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, f'{dirname_1}/{filename}'), b'404')
-        self.assertEqual(await object_body(request, f'{dirname_2}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_code(client, f'{dirname_1}/{filename}'), 404)
+        self.assertEqual(await object_body(client, f'{dirname_2}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_file_in_renamed_nested_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname_1 = str(uuid.uuid4())
@@ -1843,25 +1756,24 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         self.assertEqual(
-            await object_code(request, f'{dirname_1}/{dirname_2}/{filename}'),
-            b'404')
+            await object_code(client, f'{dirname_1}/{dirname_2}/{filename}'),
+            404)
         self.assertEqual(
-            await object_body(request, f'{dirname_3}/{dirname_2}/{filename}'),
+            await object_body(client, f'{dirname_3}/{dirname_2}/{filename}'),
             b'some-bytes')
 
-    @async_test
     async def test_file_created_in_renamed_watched_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname_1 = str(uuid.uuid4())
@@ -1881,21 +1793,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, f'{dirname_1}/{filename}'), b'404')
-        self.assertEqual(await object_body(request, f'{dirname_2}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_code(client, f'{dirname_1}/{filename}'), 404)
+        self.assertEqual(await object_body(client, f'{dirname_2}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_file_created_in_renamed_watched_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname_1 = str(uuid.uuid4())
@@ -1913,21 +1824,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, f'{dirname_1}/{filename}'), b'404')
-        self.assertEqual(await object_body(request, f'{dirname_2}/{filename}'), b'some-bytes')
+        self.assertEqual(await object_code(client, f'{dirname_1}/{filename}'), 404)
+        self.assertEqual(await object_body(client, f'{dirname_2}/{filename}'), b'some-bytes')
 
-    @async_test
     async def test_file_in_renamed_nested_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname_1 = str(uuid.uuid4())
@@ -1945,25 +1855,24 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         self.assertEqual(
-            await object_code(request, f'{dirname_1}/{dirname_2}/{filename}'),
-            b'404')
+            await object_code(client, f'{dirname_1}/{dirname_2}/{filename}'),
+            404)
         self.assertEqual(
-            await object_body(request, f'{dirname_3}/{dirname_2}/{filename}'),
+            await object_body(client, f'{dirname_3}/{dirname_2}/{filename}'),
             b'some-bytes')
 
-    @async_test
     async def test_file_in_renamed_twice_nested_directory_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname_1 = str(uuid.uuid4())
@@ -1985,28 +1894,27 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         self.assertEqual(
-            await object_code(request, f'{dirname_1}/{dirname_2}/{filename}'),
-            b'404')
+            await object_code(client, f'{dirname_1}/{dirname_2}/{filename}'),
+            404)
         self.assertEqual(
-            await object_code(request, f'{dirname_3}/{dirname_2}/{filename}'),
-            b'404')
+            await object_code(client, f'{dirname_3}/{dirname_2}/{filename}'),
+            404)
         self.assertEqual(
-            await object_body(request, f'{dirname_4}/{dirname_2}/{filename}'),
+            await object_body(client, f'{dirname_4}/{dirname_2}/{filename}'),
             b'some-bytes')
 
-    @async_test
     async def test_file_in_renamed_twice_nested_directory_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname_1 = str(uuid.uuid4())
@@ -2026,28 +1934,27 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         self.assertEqual(
-            await object_code(request, f'{dirname_1}/{dirname_2}/{filename}'),
-            b'404')
+            await object_code(client, f'{dirname_1}/{dirname_2}/{filename}'),
+            404)
         self.assertEqual(
-            await object_code(request, f'{dirname_3}/{dirname_2}/{filename}'),
-            b'404')
+            await object_code(client, f'{dirname_3}/{dirname_2}/{filename}'),
+            404)
         self.assertEqual(
-            await object_body(request, f'{dirname_4}/{dirname_2}/{filename}'),
+            await object_body(client, f'{dirname_4}/{dirname_2}/{filename}'),
             b'some-bytes')
 
-    @async_test
     async def test_file_rename_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename_1 = str(uuid.uuid4())
@@ -2060,21 +1967,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, f'{filename_1}'), b'404')
-        self.assertEqual(await object_body(request, f'{filename_2}'), b'some-bytes')
+        self.assertEqual(await object_code(client, f'{filename_1}'), 404)
+        self.assertEqual(await object_body(client, f'{filename_2}'), b'some-bytes')
 
-    @async_test
     async def test_file_rename_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         filename_1 = str(uuid.uuid4())
@@ -2089,21 +1995,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, f'{filename_1}'), b'404')
-        self.assertEqual(await object_body(request, f'{filename_2}'), b'some-bytes')
+        self.assertEqual(await object_code(client, f'{filename_1}'), 404)
+        self.assertEqual(await object_body(client, f'{filename_2}'), b'some-bytes')
 
-    @async_test
     async def test_file_delete_immediate(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname = str(uuid.uuid4())
@@ -2117,20 +2022,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, f'{dirname}/{filename}'), b'404')
+        self.assertEqual(await object_code(client, f'{dirname}/{filename}'), 404)
 
-    @async_test
     async def test_file_delete_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname = str(uuid.uuid4())
@@ -2146,20 +2050,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, f'{dirname}/{filename}'), b'404')
+        self.assertEqual(await object_code(client, f'{dirname}/{filename}'), 404)
 
-    @async_test
     async def test_many_files_delete_after_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname = str(uuid.uuid4())
@@ -2180,21 +2083,20 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
         for filename in filenames:
-            self.assertEqual(await object_code(request, f'{dirname}/{filename}'), b'404')
+            self.assertEqual(await object_code(client, f'{dirname}/{filename}'), 404)
 
-    @async_test
     async def test_file_named_as_flush_uploaded_with_others(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
-        self.add_async_cleanup(stop)
+        self.addAsyncCleanup(stop)
         await start()
 
         dirname = str(uuid.uuid4())
@@ -2213,20 +2115,19 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
-        self.assertEqual(await object_body(request, f'{dirname}/{filename_1}'), b'some-bytes')
-        self.assertEqual(await object_body(request, f'{dirname}/{filename_2}'), b'more-bytes')
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
+        self.assertEqual(await object_body(client, f'{dirname}/{filename_1}'), b'some-bytes')
+        self.assertEqual(await object_body(client, f'{dirname}/{filename_2}'), b'more-bytes')
 
-    @async_test
     async def test_file_created_after_overflow(self):
 
         max_queued_events = 16384
 
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         start, stop = syncer_for('/s3-home-folder')
         await start()
@@ -2246,26 +2147,25 @@ class TestIntegration(unittest.TestCase):
 
         await stop()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename_2), b'more-bytes')
+        self.assertEqual(await object_body(client, filename_2), b'more-bytes')
 
-    @async_test
     async def test_multiple_syncers_on_same_folder(self):
-        self.add_async_cleanup(create_directory('/s3-home-folder'))
-        self.add_async_cleanup(create_directory('/test-data/my-bucket'))
+        self.addAsyncCleanup(create_directory('/s3-home-folder'))
+        self.addAsyncCleanup(create_directory('/test-data/my-bucket'))
 
         # We have to exclude the mobius flush files otherwise we end up in an infinite loop
         # where each syncer responds to the creation/deletion of the other's flush files
         start_1, stop_1 = syncer_for(
             '/s3-home-folder', exclude_local=r'.*(/|^)\.__mobius3_flush__.*')
-        self.add_async_cleanup(stop_1)
+        self.addAsyncCleanup(stop_1)
         await start_1()
 
         start_2, stop_2 = syncer_for(
             '/s3-home-folder', exclude_local=r'.*(/|^)\.__mobius3_flush__.*')
-        self.add_async_cleanup(stop_2)
+        self.addAsyncCleanup(stop_2)
         await start_2()
 
         filename = str(uuid.uuid4())
@@ -2274,12 +2174,11 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, f'{filename}'), b'some-bytes')
+        self.assertEqual(await object_body(client, f'{filename}'), b'some-bytes')
 
-    @async_test
     async def test_multiple_syncers_on_nfs(self):
         # We could have mobius3 running on two different volumes, which are linked via some
         # mechanism unknown to inotify, such as NFS. The main relevant bebaviour of NFS is that
@@ -2297,23 +2196,23 @@ class TestIntegration(unittest.TestCase):
         # other. We do this by having the linked folders sync to two separate buckets, and checking
         # that an upload to one does _not trigger an upload to the other
 
-        self.add_async_cleanup(create_directory('/nfs-1/s3-home-folder'))
-        self.add_async_cleanup(create_directory('/test-data/my-bucket-1'))
+        self.addAsyncCleanup(create_directory('/nfs-1/s3-home-folder'))
+        self.addAsyncCleanup(create_directory('/test-data/my-bucket-1'))
 
         start_1, stop_1 = syncer_for('/nfs-1/s3-home-folder',
                                      bucket='my-bucket-1',
                                      exclude_local=exclude_local_1,
                                      )
-        self.add_async_cleanup(stop_1)
+        self.addAsyncCleanup(stop_1)
         await start_1()
 
-        self.add_async_cleanup(create_directory('/test-data/my-bucket-2'))
+        self.addAsyncCleanup(create_directory('/test-data/my-bucket-2'))
 
         start_2, stop_2 = syncer_for('/nfs-2/s3-home-folder',
                                      bucket='my-bucket-2',
                                      exclude_local=exclude_local_2,
                                      )
-        self.add_async_cleanup(stop_2)
+        self.addAsyncCleanup(stop_2)
         await start_2()
 
         filename_1 = 'from_1_' + str(uuid.uuid4())
@@ -2327,31 +2226,31 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename_1, bucket='my-bucket-1'), b'some-bs')
-        self.assertEqual(await object_code(request, filename_1, bucket='my-bucket-2'), b'404')
+        self.assertEqual(await object_body(client, filename_1, bucket='my-bucket-1'), b'some-bs')
+        self.assertEqual(await object_code(client, filename_1, bucket='my-bucket-2'), 404)
 
         #####
 
         # Ensure that even after polling S3, there is no change of mtime, and something horrible
         # like the file disappearing hasn't happened
 
-        self.add_async_cleanup(create_directory('/test-data/my-bucket'))
+        self.addAsyncCleanup(create_directory('/test-data/my-bucket'))
 
         start_1, stop_1 = syncer_for('/nfs-1/s3-home-folder',
                                      exclude_local=exclude_local_1,
                                      local_modification_persistance=1, download_interval=1,
                                      )
-        self.add_async_cleanup(stop_1)
+        self.addAsyncCleanup(stop_1)
         await start_1()
 
         start_2, stop_2 = syncer_for('/nfs-2/s3-home-folder',
                                      exclude_local=exclude_local_2,
                                      local_modification_persistance=1, download_interval=1,
                                      )
-        self.add_async_cleanup(stop_2)
+        self.addAsyncCleanup(stop_2)
         await start_2()
 
         filename_1 = 'from_1_' + str(uuid.uuid4())
@@ -2361,7 +2260,7 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        self.assertEqual(await object_body(request, filename_1), b'some-bytes')
+        self.assertEqual(await object_body(client, filename_1), b'some-bytes')
 
         await asyncio.sleep(2)
 
@@ -2376,7 +2275,7 @@ class TestIntegration(unittest.TestCase):
 
         await await_upload()
 
-        self.assertEqual(await object_code(request, filename_1), b'404')
+        self.assertEqual(await object_code(client, filename_1), 404)
 
         await asyncio.sleep(2)
 
@@ -2384,29 +2283,24 @@ class TestIntegration(unittest.TestCase):
         self.assertFalse(os.path.exists(f'/nfs-2/s3-home-folder/{filename_1}'))
 
 
-class TestEndToEnd(unittest.TestCase):
+class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
 
-    def add_async_cleanup(self, coroutine, *args):
-        loop = asyncio.get_event_loop()
-        self.addCleanup(loop.run_until_complete, coroutine(*args))
-
-    @async_test
     async def test_console_script(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         install_mobius3 = await asyncio.create_subprocess_exec('python3', 'setup.py', 'develop')
-        self.add_async_cleanup(terminate, install_mobius3)
+        self.addAsyncCleanup(terminate, install_mobius3)
         await install_mobius3.wait()
 
         mobius3_process = await asyncio.create_subprocess_exec(
             'mobius3', '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
-        self.add_async_cleanup(terminate, mobius3_process)
+        self.addAsyncCleanup(terminate, mobius3_process)
 
         await await_upload()
 
@@ -2417,33 +2311,32 @@ class TestEndToEnd(unittest.TestCase):
         await await_upload()
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'some-bytes')
+        self.assertEqual(await object_body(client, filename), b'some-bytes')
 
         await await_upload()
 
-    @async_test
     async def test_direct_script_ecs_auth(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        await set_temporary_creds(request)
+        await set_temporary_creds(client)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             '--credentials-source', 'ecs-container-endpoint',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
-        self.add_async_cleanup(terminate, mobius3_process)
+        self.addAsyncCleanup(terminate, mobius3_process)
 
         await await_upload()
 
@@ -2454,16 +2347,15 @@ class TestEndToEnd(unittest.TestCase):
         await await_upload()
         await await_upload()
 
-        self.assertEqual(await object_body(request, filename), b'some-bytes')
+        self.assertEqual(await object_body(client, filename), b'some-bytes')
 
         await await_upload()
 
-    @async_test
     async def test_direct_script_no_upload_existing(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         filename = str(uuid.uuid4())
         with open(f'/s3-home-folder/{filename}', 'wb') as file:
@@ -2472,33 +2364,32 @@ class TestEndToEnd(unittest.TestCase):
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
-        self.add_async_cleanup(terminate, mobius3_process)
+        self.addAsyncCleanup(terminate, mobius3_process)
 
         await await_upload()
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_code(request, filename), b'404')
+        self.assertEqual(await object_code(client, filename), 404)
 
-    @async_test
     async def test_direct_script_delay(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
-        self.add_async_cleanup(terminate, mobius3_process)
+        self.addAsyncCleanup(terminate, mobius3_process)
 
         await await_upload()
 
@@ -2509,27 +2400,26 @@ class TestEndToEnd(unittest.TestCase):
         await await_upload()
         await await_upload()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'some-bytes')
+        self.assertEqual(await object_body(client, filename), b'some-bytes')
 
         await await_upload()
 
-    @async_test
     async def test_direct_script_after_stop(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
-        self.add_async_cleanup(terminate, mobius3_process)
+        self.addAsyncCleanup(terminate, mobius3_process)
 
         await await_upload()
 
@@ -2540,27 +2430,26 @@ class TestEndToEnd(unittest.TestCase):
         mobius3_process.terminate()
         await mobius3_process.wait()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'some-bytes')
+        self.assertEqual(await object_body(client, filename), b'some-bytes')
 
         await await_upload()
 
-    @async_test
     async def test_direct_script_without_prefix_after_stop(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
-        self.add_async_cleanup(terminate, mobius3_process)
+        self.addAsyncCleanup(terminate, mobius3_process)
 
         await await_upload()
 
@@ -2571,28 +2460,27 @@ class TestEndToEnd(unittest.TestCase):
         mobius3_process.terminate()
         await mobius3_process.wait()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, filename), b'some-bytes')
+        self.assertEqual(await object_body(client, filename), b'some-bytes')
 
         await await_upload()
 
-    @async_test
     async def test_direct_script_with_prefix_after_stop(self):
         delete_dir = create_directory('/s3-home-folder')
-        self.add_async_cleanup(delete_dir)
+        self.addAsyncCleanup(delete_dir)
         delete_bucket_dir = create_directory('/test-data/my-bucket')
-        self.add_async_cleanup(delete_bucket_dir)
+        self.addAsyncCleanup(delete_bucket_dir)
 
         mobius3_process = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'mobius3',
             '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--prefix', 'my-folder/',
-            '--disable-ssl-verification', '--disable-0x20-dns-encoding',
+            '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
-        self.add_async_cleanup(terminate, mobius3_process)
+        self.addAsyncCleanup(terminate, mobius3_process)
 
         await await_upload()
 
@@ -2603,10 +2491,10 @@ class TestEndToEnd(unittest.TestCase):
         mobius3_process.terminate()
         await mobius3_process.wait()
 
-        request, close = get_docker_link_and_minio_compatible_http_pool()
-        self.add_async_cleanup(close)
+        client = get_docker_link_and_minio_compatible_http_pool()
+        self.addAsyncCleanup(client.aclose)
 
-        self.assertEqual(await object_body(request, f'my-folder/{filename}'), b'some-bytes')
+        self.assertEqual(await object_body(client, f'my-folder/{filename}'), b'some-bytes')
 
         await await_upload()
 
@@ -2627,18 +2515,11 @@ def create_directory(path):
 
 
 def get_docker_link_and_minio_compatible_http_pool():
-    async def transform_fqdn(fqdn):
-        return fqdn
-
-    ssl_context = ssl.SSLContext()
+    ssl_context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
+    ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
     return Pool(
-        # 0x20 encoding does not appear to work with linked containers
-        get_dns_resolver=lambda **kwargs: Resolver(**{
-            'transform_fqdn': transform_fqdn,
-            **kwargs,
-        }),
         # We use self-signed certs locally
         get_ssl_context=lambda: ssl_context,
     )
@@ -2674,54 +2555,49 @@ async def await_upload():
     await asyncio.sleep(1)
 
 
-async def object_body(request, key, bucket='my-bucket'):
-    _, _, body = await object_triple(request, key, bucket=bucket)
-    body_bytes = await buffered(body)
-    return body_bytes
+async def object_body(client, key, bucket='my-bucket'):
+    return (await object_response(client, key, bucket=bucket)).content
 
 
-async def object_code(request, key, bucket='my-bucket'):
-    code, _, body = await object_triple(request, key, bucket=bucket)
-    await buffered(body)
-    return code
+async def object_code(client, key, bucket='my-bucket'):
+    return (await object_response(client, key, bucket=bucket)).status_code
 
 
-async def get_credentials_from_environment():
+async def get_credentials_from_environment(_):
     return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
 
 
-async def object_triple(request, key, bucket='my-bucket'):
-    signed_request = signed(
-        request, credentials=get_credentials_from_environment,
-        service='s3', region='us-east-1',
+async def object_response(client, key, bucket='my-bucket'):
+    return await client.request(b'GET', f'https://minio:9000/{bucket}/{key}', auth=AWSAuth(
+        service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment
+    ))
+
+
+async def delete_object(client, key):
+    return await client.request(b'DELETE', f'https://minio:9000/my-bucket/{key}', auth=AWSAuth(
+        service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment
+    ))
+
+
+async def put_body(client, key, body):
+    content_hash, hashed_content = get_content_hash(body)
+    auth = AWSAuth(
+        service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment,
+        content_hash=content_hash
     )
-    return await signed_request(b'GET', f'https://minio:9000/{bucket}/{key}')
+    return await client.request(b'PUT', f'https://minio:9000/my-bucket/{key}', headers=(
+        ('content-length', str(len(body))),
+    ), content=hashed_content, auth=auth)
 
 
-async def delete_object(request, key):
-    signed_request = signed(
-        request, credentials=get_credentials_from_environment,
-        service='s3', region='us-east-1',
-    )
-    return await signed_request(b'DELETE', f'https://minio:9000/my-bucket/{key}')
-
-
-async def put_body(request, key, body):
-    signed_request = signed(
-        request, credentials=get_credentials_from_environment,
-        service='s3', region='us-east-1',
-    )
-    return await signed_request(b'PUT', f'https://minio:9000/my-bucket/{key}', body=streamed(body))
-
-
-async def set_temporary_creds(request):
-    admin_access_key_id, admin_secret_access_key, _ = await get_credentials_from_environment()
+async def set_temporary_creds(client):
+    admin_access_key_id, admin_secret_access_key, _ = await get_credentials_from_environment(client)
 
     # minio doesn't seem to be able to give temporary creds for the main user
     user_access_key_id = str(uuid.uuid4())[:8]
     user_secret_access_key = str(uuid.uuid4())[:8]
 
-    async def new_user_creds():
+    async def new_user_creds(_):
         return user_access_key_id, user_secret_access_key, ()
 
     proc = await asyncio.create_subprocess_exec(
@@ -2751,25 +2627,25 @@ async def set_temporary_creds(request):
     if proc.returncode:
         raise Exception(stdout + stderr)
 
-    signed_request = signed(
-        request, credentials=new_user_creds,
-        service='sts', region='us-east-1',
-    )
     request_body_bytes = urllib.parse.urlencode((
         ('Action', 'AssumeRole'),
         ('Version', '2011-06-15'),
     )).encode('utf-8')
-    _, _, body = await signed_request(
+
+    content_hash, hashed_content = get_content_hash(request_body_bytes)
+    auth = AWSAuth(service='sts', region='us-east-1', client=client, get_credentials=new_user_creds, content_hash=content_hash)
+    response = await client.request(
         b'POST', 'https://minio:9000/',
         headers=(
-            (b'content-type', b'application/x-www-form-urlencoded; charset=utf-8'),
+            ('content-type', 'application/x-www-form-urlencoded; charset=utf-8'),
+            ('content-length', str(len(request_body_bytes))),
         ),
-        body=streamed(request_body_bytes),
+        content=hashed_content,
+        auth=auth
     )
-    body_bytes = await buffered(body)
 
     def xml(tag):
-        return re.search(b'<' + tag + b'>(.*)</' + tag + b'>', body_bytes)[1].decode('utf-8')
+        return re.search(b'<' + tag + b'>(.*)</' + tag + b'>', response.content)[1].decode('utf-8')
 
     creds = {
         'AccessKeyId': xml(b'AccessKeyId'),
@@ -2778,10 +2654,17 @@ async def set_temporary_creds(request):
         'Token': xml(b'SessionToken'),
     }
 
-    request_body_bytes = json.dumps(creds).encode('utf-8')
-    _, _, body = await request(
-        b'POST', 'http://169.254.170.2/creds', body=streamed(request_body_bytes), headers=(
-            (b'content-length', str(len(request_body_bytes)).encode()),
+    request_content_bytes = json.dumps(creds).encode('utf-8')
+    await client.request(
+        b'POST', 'http://169.254.170.2/creds', content=streamed(request_content_bytes), headers=(
+            ('content-length', str(len(request_content_bytes))),
         ))
-    await buffered(body)
     return creds
+
+
+def get_content_hash(content=b''):
+
+    async def hashed_content():
+        yield content
+
+    return hashlib.sha256(content).hexdigest(), hashed_content()

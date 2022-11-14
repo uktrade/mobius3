@@ -1,4 +1,4 @@
-FROM alpine:3.10
+FROM alpine:3.16
 
 ENV \
 	LC_ALL=en_US.UTF-8 \
@@ -8,11 +8,12 @@ ENV \
 RUN \
 	apk add --no-cache \
 		build-base \
+		py3-pip \
 		python3 \
 		python3-dev && \
-	pip3 install \
+	pip install \
 		coverage==4.5.3 && \
-	wget -O mc https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2019-12-24T23-41-36Z && \
+	wget -O mc https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2022-11-07T23-47-39Z && \
 	chmod +x mc
 
 COPY LICENSE README.md mobius3.py setup.py test.py test_with_coverage.sh .coveragerc /

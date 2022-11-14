@@ -5,9 +5,12 @@ from collections import (
     defaultdict,
 )
 import ctypes
+import contextlib
 import datetime
 import enum
 import fcntl
+import hashlib
+import hmac
 import termios
 import json
 import logging
@@ -30,27 +33,9 @@ from xml.etree import (
     ElementTree as ET,
 )
 
-from aiodnsresolver import (
-    ResolverLoggerAdapter,
-    Resolver,
-)
+import httpx
 from fifolock import (
     FifoLock,
-)
-from lowhaio import (
-    HttpConnectionError,
-    HttpDataError,
-    HttpLoggerAdapter,
-    Pool,
-    buffered,
-    empty_async_iterator,
-    timeout,
-)
-from lowhaio_aws_sigv4_unsigned_payload import (
-    aws_sigv4_headers,
-)
-from lowhaio_retry import (
-    retry,
 )
 
 
@@ -118,23 +103,6 @@ def get_logger_adapter_default(extra):
     return S3SyncLoggerAdapter(logging.getLogger('mobius3'), extra)
 
 
-def get_http_logger_adapter_default(s3sync_extra):
-    def _get_http_logger_adapter_default(http_extra):
-        s3sync_adapter = S3SyncLoggerAdapter(logging.getLogger('lowhaio'), s3sync_extra)
-        return HttpLoggerAdapter(s3sync_adapter, http_extra)
-    return _get_http_logger_adapter_default
-
-
-def get_resolver_logger_adapter_default(s3sync_extra):
-    def _get_resolver_logger_adapter_default(http_extra):
-        def __get_resolver_logger_adapter_default(resolver_extra):
-            s3sync_adapter = S3SyncLoggerAdapter(logging.getLogger('aiodnsresolver'), s3sync_extra)
-            http_adapter = HttpLoggerAdapter(s3sync_adapter, http_extra)
-            return ResolverLoggerAdapter(http_adapter, resolver_extra)
-        return __get_resolver_logger_adapter_default
-    return _get_resolver_logger_adapter_default
-
-
 WATCH_MASK = \
     InotifyEvents.IN_MODIFY | \
     InotifyEvents.IN_ATTRIB | \
@@ -153,6 +121,146 @@ DOWNLOAD_WATCH_MASK = \
 EVENT_HEADER = struct.Struct('iIII')
 
 
+get_current_task = \
+    asyncio.current_task if hasattr(asyncio, 'current_task') else \
+    asyncio.Task.current_task
+
+
+async def empty_async_iterator():
+    while False:
+        yield
+
+
+async def streamed(data):
+    yield data
+
+
+async def buffered(data):
+    return b''.join([chunk async for chunk in data])
+
+
+@contextlib.contextmanager
+def timeout(loop, max_time):
+
+    cancelling_due_to_timeout = False
+    current_task = get_current_task()
+
+    def cancel():
+        nonlocal cancelling_due_to_timeout
+        cancelling_due_to_timeout = True
+        current_task.cancel()
+
+    def reset():
+        nonlocal handle
+        handle.cancel()
+        handle = loop.call_later(max_time, cancel)
+
+    handle = loop.call_later(max_time, cancel)
+
+    try:
+        yield reset
+    except asyncio.CancelledError:
+        if cancelling_due_to_timeout:
+            raise asyncio.TimeoutError()
+        raise
+    finally:
+        handle.cancel()
+
+
+def Pool(
+        get_ssl_context=ssl.create_default_context,
+        get_logger_adapter=get_logger_adapter_default,
+    ):
+
+    logger = get_logger_adapter({})
+
+    async def log_request(request):
+        logger.info('[http] Request: %s', request.method, request.url)
+
+    async def log_response(response):
+        logger.info('[http] Response: %s %s %s', response.request.method, response.request.url, response.status_code)
+
+    return httpx.AsyncClient(
+        timeout=10.0, transport=httpx.AsyncHTTPTransport(retries=3, verify=get_ssl_context()),
+        event_hooks={'request': [log_request], 'response': [log_response]}
+    )
+
+
+def AWSAuth(service, region, client, get_credentials, content_hash=hashlib.sha256().hexdigest()):
+
+    def aws_sigv4_headers(access_key_id, secret_access_key, pre_auth_headers,
+                          method, path, params):
+        algorithm = 'AWS4-HMAC-SHA256'
+
+        now = datetime.datetime.utcnow()
+        amzdate = now.strftime('%Y%m%dT%H%M%SZ')
+        datestamp = now.strftime('%Y%m%d')
+        credential_scope = f'{datestamp}/{region}/{service}/aws4_request'
+
+        pre_auth_headers_lower = tuple(
+            (header_key.lower(), ' '.join(header_value.split()))
+            for header_key, header_value in pre_auth_headers
+        )
+        required_headers = (
+            ('x-amz-content-sha256', content_hash),
+            ('x-amz-date', amzdate),
+        )
+        headers = sorted(pre_auth_headers_lower + required_headers)
+        signed_headers = ';'.join(key for key, _ in headers)
+
+        def signature():
+            def canonical_request():
+                canonical_uri = urllib.parse.quote(path, safe='/~')
+                quoted_params = sorted(
+                    (urllib.parse.quote(key, safe='~'), urllib.parse.quote(value, safe='~'))
+                    for key, value in params
+                )
+                canonical_querystring = '&'.join(f'{key}={value}' for key, value in quoted_params)
+                canonical_headers = ''.join(f'{key}:{value}\n' for key, value in headers)
+
+                return f'{method}\n{canonical_uri}\n{canonical_querystring}\n' + \
+                       f'{canonical_headers}\n{signed_headers}\n{content_hash}'
+
+            def sign(key, msg):
+                return hmac.new(key, msg.encode('ascii'), hashlib.sha256).digest()
+
+            string_to_sign = f'{algorithm}\n{amzdate}\n{credential_scope}\n' + \
+                             hashlib.sha256(canonical_request().encode('ascii')).hexdigest()
+
+            date_key = sign(('AWS4' + secret_access_key).encode('ascii'), datestamp)
+            region_key = sign(date_key, region)
+            service_key = sign(region_key, service)
+            request_key = sign(service_key, 'aws4_request')
+            return sign(request_key, string_to_sign).hex()
+
+        return (
+            ('authorization', (
+                f'{algorithm} Credential={access_key_id}/{credential_scope}, '
+                f'SignedHeaders={signed_headers}, Signature=' + signature())
+             ),
+            ('x-amz-date', amzdate),
+            ('x-amz-content-sha256', content_hash),
+        )
+
+    class _AWSAuth(httpx.Auth):
+        async def async_auth_flow(self, request):
+            access_key_id, secret_access_key, auth_headers = await get_credentials(client)
+
+            params = tuple((key.decode(), value.decode()) for (key, value) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True))
+            existing_headers = tuple((key, value) for (key, value) in request.headers.items() if key == 'host' or key.startswith('content-') or key.startswith('x-amz-'))
+
+            headers_to_set = aws_sigv4_headers(
+                access_key_id, secret_access_key, existing_headers + auth_headers,
+                request.method, request.url.path, params,
+            ) + auth_headers
+            for key, value in headers_to_set:
+                request.headers[key] = value
+
+            yield request
+
+    return _AWSAuth()
+
+
 async def get_credentials_from_environment(_):
     return os.environ['AWS_ACCESS_KEY_ID'], os.environ['AWS_SECRET_ACCESS_KEY'], ()
 
@@ -163,7 +271,7 @@ def get_credentials_from_ecs_endpoint():
     pre_auth_headers = None
     expiration = datetime.datetime.fromtimestamp(0)
 
-    async def _get_credentials(request):
+    async def _get_credentials(client):
         nonlocal aws_access_key_id
         nonlocal aws_secret_access_key
         nonlocal pre_auth_headers
@@ -172,16 +280,16 @@ def get_credentials_from_ecs_endpoint():
         now = datetime.datetime.now()
 
         if now > expiration:
-            _, _, body = await request(
+            response = await client.request(
                 b'GET',
                 'http://169.254.170.2' + os.environ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI']
             )
-            creds = json.loads(await buffered(body))
+            creds = json.loads(response.content)
             aws_access_key_id = creds['AccessKeyId']
             aws_secret_access_key = creds['SecretAccessKey']
             expiration = datetime.datetime.strptime(creds['Expiration'], '%Y-%m-%dT%H:%M:%SZ')
             pre_auth_headers = (
-                (b'x-amz-security-token', creds['Token'].encode(),),
+                ('x-amz-security-token', creds['Token']),
             )
 
         return aws_access_key_id, aws_secret_access_key, pre_auth_headers
@@ -201,8 +309,6 @@ def Syncer(
         directory_watch_timeout=5,
         download_directory='.mobius3',
         get_logger_adapter=get_logger_adapter_default,
-        get_http_logger_adapter=get_http_logger_adapter_default,
-        get_resolver_logger_adapter=get_resolver_logger_adapter_default,
         local_modification_persistance=120,
         download_interval=10,
         exclude_remote=r'^$',
@@ -292,39 +398,8 @@ def Syncer(
         'children': {},
     }
 
-    request, close_pool = get_pool()
-
-    def signed(request, credentials, service, region):
-        async def _signed(logger, method, url, params=(), headers=(),
-                          body=empty_async_iterator, body_args=(), body_kwargs=(),
-                          get_logger_adapter=get_http_logger_adapter,
-                          get_resolver_logger_adapter=get_resolver_logger_adapter):
-
-            body_hash = 'UNSIGNED-PAYLOAD'
-            access_key_id, secret_access_key, auth_headers = await credentials(request)
-
-            parsed_url = urllib.parse.urlsplit(url)
-            all_headers = aws_sigv4_headers(
-                access_key_id, secret_access_key, headers + auth_headers, service, region,
-                parsed_url.hostname, method.decode(), parsed_url.path, params, body_hash,
-            )
-
-            return await request(
-                method, url, params=params, headers=all_headers,
-                body=body, body_args=body_args, body_kwargs=body_kwargs,
-                get_logger_adapter=get_logger_adapter(logger.extra),
-                get_resolver_logger_adapter=get_resolver_logger_adapter(logger.extra),
-            )
-
-        return _signed
-
-    retriable_request = retry(request, exception_intervals=(
-        (HttpConnectionError, (0, 0, 0)),
-        (HttpDataError, (0, 1, 2, 4, 8, 16)),
-    ))
-    signed_request = signed(
-        retriable_request, credentials=get_credentials, service='s3', region=region,
-    )
+    client = get_pool()
+    auth = AWSAuth(service='s3', region=region, client=client, get_credentials=get_credentials, content_hash='UNSIGNED-PAYLOAD')
 
     def ensure_file_in_tree_cache(path):
         parent_dir = ensure_parent_dir_in_tree_cache(path)
@@ -361,7 +436,7 @@ def Syncer(
         return directory['children'][path.name]
 
     def set_etag(path, headers):
-        etags[path] = dict((key.lower(), value) for key, value in headers)[b'etag'].decode()
+        etags[path] = headers['etag']
 
     def queued_push_local_change(path):
         push_queued[path] += 1
@@ -445,20 +520,28 @@ def Syncer(
         watch_directory_recursive(logger, directory, WATCH_MASK, upload)
 
     async def stop():
+        async def cancel(task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
         # Make every effort to read all incoming events and finish the queue
         logger = get_logger_adapter({'mobius3_component': 'stop'})
         logger.info('Stopping')
-        download_manager_task.cancel()
+        if download_manager_task is not None:
+            await cancel(download_manager_task)
         for task in download_tasks:
-            task.cancel()
+            await cancel(task)
         read_events(logger)
         while upload_job_queue._unfinished_tasks:
             await upload_job_queue.join()
             read_events(logger)
         stop_inotify()
         for task in upload_tasks:
-            task.cancel()
-        await close_pool()
+            await cancel(task)
+        await client.aclose()
         await asyncio.sleep(0)
         logger.info('Finished stopping')
 
@@ -843,14 +926,14 @@ def Syncer(
         is_symlink = os.path.islink(path)
 
         if not is_symlink:
-            body = file_body
-            content_length = str(os.stat(path).st_size).encode()
+            content = file_body()
+            content_length = str(os.stat(path).st_size)
         else:
-            body = symlink_points_to
-            content_length = str(len(os.readlink(path).encode('utf-8'))).encode()
+            content = symlink_points_to()
+            content_length = str(len(os.readlink(path).encode('utf-8')))
 
-        mtime = str(os.lstat(path).st_mtime).encode()
-        mode = str(os.lstat(path).st_mode).encode()
+        mtime = str(os.lstat(path).st_mtime)
+        mode = str(os.lstat(path).st_mode)
 
         # Ensure we only progress if the content length hasn't changed since
         # we have queued the upload
@@ -859,8 +942,8 @@ def Syncer(
             raise FileContentChanged(path)
 
         data = (
-            (b'x-amz-meta-mtime', mtime),
-            (b'x-amz-meta-mode', mode),
+            ('x-amz-meta-mtime', mtime),
+            ('x-amz-meta-mode', mode),
         )
 
         def set_etag_and_meta(path, headers):
@@ -868,9 +951,9 @@ def Syncer(
             set_etag(path, headers)
 
         await locked_request(
-            logger, b'PUT', path, file_key_for_path(path), body=body,
+            logger, b'PUT', path, file_key_for_path(path), content=content,
             get_headers=lambda: (
-                (b'content-length', content_length),
+                ('content-length', content_length),
             ) + data,
             on_done=set_etag_and_meta,
         )
@@ -878,8 +961,8 @@ def Syncer(
     async def upload_meta(logger, path, content_version_current, content_version_original):
         logger.info('Uploading meta %s', path)
 
-        mtime = str(os.lstat(path).st_mtime).encode()
-        mode = str(os.lstat(path).st_mode).encode()
+        mtime = str(os.lstat(path).st_mtime)
+        mode = str(os.lstat(path).st_mode)
 
         # Ensure we only progress if the content hasn't changed since we have
         # queued the upload
@@ -888,8 +971,8 @@ def Syncer(
             raise FileContentChanged(path)
 
         data = (
-            (b'x-amz-meta-mtime', mtime),
-            (b'x-amz-meta-mode', mode),
+            ('x-amz-meta-mtime', mtime),
+            ('x-amz-meta-mode', mode),
         )
 
         def set_meta(path, _):
@@ -900,9 +983,9 @@ def Syncer(
             logger, b'PUT', path, key,
             cont=lambda: meta[path] != data,
             get_headers=lambda: data + (
-                (b'x-amz-copy-source', f'/{bucket}/'.encode() + key.encode()),
-                (b'x-amz-metadata-directive', b'REPLACE'),
-                (b'x-amz-copy-source-if-match', etags[path].encode()),
+                ('x-amz-copy-source', f'/{bucket}/{key}'),
+                ('x-amz-metadata-directive', 'REPLACE'),
+                ('x-amz-copy-source-if-match', etags[path]),
             ),
             on_done=set_meta,
         )
@@ -910,7 +993,7 @@ def Syncer(
     async def upload_directory(logger, path):
         logger.info('Uploading directory %s', path)
 
-        mtime = str(os.stat(path).st_mtime).encode()
+        mtime = str(os.stat(path).st_mtime)
 
         if not os.path.isdir(path):
             raise FileContentChanged(path)
@@ -918,8 +1001,8 @@ def Syncer(
         await locked_request(
             logger, b'PUT', path, dir_key_for_path(path),
             get_headers=lambda: (
-                (b'content-length', b'0'),
-                (b'x-amz-meta-mtime', mtime),
+                ('content-length', '0'),
+                ('x-amz-meta-mtime', mtime),
             ),
             on_done=set_etag,
         )
@@ -958,7 +1041,7 @@ def Syncer(
 
     async def locked_request(logger, method, path, key, cont=lambda: True,
                              get_headers=lambda: (),
-                             body=empty_async_iterator,
+                             content=empty_async_iterator(),
                              on_done=lambda path, headers: None):
         # Keep a reference to the lock to keep it in the WeakValueDictionary
         lock = get_lock(path)
@@ -968,15 +1051,13 @@ def Syncer(
             remote_url = bucket_url + key
             headers = get_headers()
             logger.debug('%s %s %s', method.decode(), remote_url, headers)
-            code, headers, body = await signed_request(
-                logger, method, remote_url, headers=get_headers(), body=body)
-            logger.debug('%s %s', code, headers)
-            body_bytes = await buffered(body)
+            response = await client.request(method, remote_url, headers=get_headers(), content=content, auth=auth)
+            logger.debug('%s %s', response.status_code, response.headers)
 
-            if code not in [b'200', b'204']:
-                raise Exception(code, body_bytes)
+            if response.status_code not in [200, 204]:
+                raise Exception(status_code, content)
 
-            on_done(path, headers)
+            on_done(path, response.headers)
 
     async def download_manager(logger):
         while True:
@@ -1025,10 +1106,8 @@ def Syncer(
                 # Since walking the filesystem can take time we might have a new file that we have
                 # recently uploaded that was not present when we request the original file list.
                 path = full_path.relative_to(directory)
-                code, _, body = await signed_request(
-                    logger, b'HEAD', bucket_url + prefix + str(path))
-                await buffered(body)
-                if code != b'404':
+                response = await client.request(b'HEAD', bucket_url + prefix + str(path), auth=auth)
+                if response.status_code != 404:
                     continue
 
                 # Check again if we have made modifications since the above request can take time
@@ -1063,10 +1142,8 @@ def Syncer(
                     continue
 
                 path = full_path.relative_to(directory)
-                code, _, body = await signed_request(
-                    logger, b'HEAD', bucket_url + prefix + str(path) + '/')
-                await buffered(body)
-                if code != b'404':
+                response = await client.request(b'HEAD', bucket_url + prefix + str(path) + '/', auth=auth)
+                if response.status_code != 404:
                     continue
 
                 try:
@@ -1094,127 +1171,126 @@ def Syncer(
 
             logger.info('Downloading: %s', full_path)
 
-            code, headers, body = await signed_request(logger, b'GET', bucket_url + prefix + path)
-            if code != b'200':
-                await buffered(body)  # Fetch all bytes and return to pool
-                raise Exception(code)
+            async with client.stream(b'GET', bucket_url + prefix + path, auth=auth) as response:
+                if response.status_code != 200:
+                    await buffered(response.aiter_bytes())  # Fetch all bytes and return to pool
+                    raise Exception(response.status_code)
 
-            headers_dict = dict((key.lower(), value) for key, value in headers)
-            is_directory = path[-1] == '/'
+                is_directory = path[-1] == '/'
 
-            directory_to_ensure_created = \
-                full_path if is_directory else \
-                full_path.parent
+                directory_to_ensure_created = \
+                    full_path if is_directory else \
+                    full_path.parent
 
-            # Create directories under directory
-            directory_and_parents = [directory] + list(directory.parents)
-            directory_to_ensure_created_and_paraents = list(
-                reversed(directory_to_ensure_created.parents)) + [directory_to_ensure_created]
-            directories_to_ensure_created_under_directory = [
-                _dir
-                for _dir in directory_to_ensure_created_and_paraents
-                if _dir not in directory_and_parents
-            ]
-            for _dir in directories_to_ensure_created_under_directory:
+                # Create directories under directory
+                directory_and_parents = [directory] + list(directory.parents)
+                directory_to_ensure_created_and_paraents = list(
+                    reversed(directory_to_ensure_created.parents)) + [directory_to_ensure_created]
+                directories_to_ensure_created_under_directory = [
+                    _dir
+                    for _dir in directory_to_ensure_created_and_paraents
+                    if _dir not in directory_and_parents
+                ]
+                for _dir in directories_to_ensure_created_under_directory:
 
-                # If we don't wait for the containing directory to be watched,
-                # then we might be incorrectly ignoring
-                await wait_for_directory_watched(_dir)
+                    # If we don't wait for the containing directory to be watched,
+                    # then we might be incorrectly ignoring
+                    await wait_for_directory_watched(_dir)
 
-                try:
-                    os.mkdir(_dir)
-                except FileExistsError:
-                    logger.debug('Already exists: %s', _dir)
-                except NotADirectoryError:
-                    logger.debug('Not a directory: %s', _dir)
-                except Exception:
-                    logger.debug('Unable to create directory: %s', _dir)
-                else:
-                    ignore_next_directory_upload[_dir] = True
-
-            try:
-                modified = float(headers_dict[b'x-amz-meta-mtime'])
-            except (KeyError, ValueError):
-                modified = datetime.datetime.strptime(
-                    headers_dict[b'last-modified'].decode(),
-                    '%a, %d %b %Y %H:%M:%S %Z').timestamp()
-
-            try:
-                mode = int(headers_dict[b'x-amz-meta-mode'])
-            except (KeyError, ValueError):
-                mode = None
-
-            is_symlink = mode and stat.S_ISLNK(mode)
-
-            if is_directory:
-                await buffered(body)
-
-                if is_dir_pull_blocked(full_path):
-                    logger.debug('Recently changed locally, not changing: %s', full_path)
-                    return
-
-                os.utime(full_path, (modified, modified))
-                etags[full_path] = headers_dict[b'etag'].decode()
-
-                # Ensure that subsequent renames will attempt to move the directory
-                ensure_dir_in_tree_cache(full_path)
-                return
-
-            temporary_path = directory / download_directory / uuid.uuid4().hex
-            try:
-                if not is_symlink:
-                    with open(temporary_path, 'wb') as file:
-                        async for chunk in body:
-                            file.write(chunk)
-                else:
-                    symlink_points_to = await buffered(body)
-                    os.symlink(symlink_points_to, temporary_path)
-
-                # May raise a FileNotFoundError if the directory no longer
-                # exists, but handled at higher level
-                os.utime(temporary_path, (modified, modified), follow_symlinks=False)
-
-                # This is skipped when the file being downloaded is a symlink because it
-                # will fail if the symlink is processed before the file it points to exists.
-                # Permissions on symlinks in Linux are always 777 anyway as it defers to
-                # the permissions of the underlying file
-                if mode is not None and not is_symlink:
-                    os.chmod(temporary_path, mode)
-
-                # If we don't wait for the directory watched, then if
-                # - a directory has just been created above
-                # - a download that doesn't yield (enough) for the create
-                #   directory eveny to have been processed
-                # once the IN_CREATE event for the directory is processed it
-                # would discover the file and re-upload
-                await wait_for_directory_watched(full_path)
+                    try:
+                        os.mkdir(_dir)
+                    except FileExistsError:
+                        logger.debug('Already exists: %s', _dir)
+                    except NotADirectoryError:
+                        logger.debug('Not a directory: %s', _dir)
+                    except Exception:
+                        logger.debug('Unable to create directory: %s', _dir)
+                    else:
+                        ignore_next_directory_upload[_dir] = True
 
                 try:
-                    await flush_events(logger, full_path)
-                except FileNotFoundError:
-                    # The folder doesn't exist, so moving into place will fail
-                    return
+                    modified = float(response.headers['x-amz-meta-mtime'])
+                except (KeyError, ValueError):
+                    modified = datetime.datetime.strptime(
+                        response.headers['last-modified'],
+                        '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
-                if is_pull_blocked(full_path):
-                    logger.debug('Recently changed locally, not changing: %s', full_path)
-                    return
-
-                os.replace(temporary_path, full_path)
-
-                meta[full_path] = (
-                    (b'x-amz-meta-mtime', modified),
-                    (b'x-amz-meta-mode', mode),
-                )
-
-                # Ensure that once we move the file into place, subsequent
-                # renames will attempt to move the file
-                ensure_file_in_tree_cache(full_path)
-            finally:
                 try:
-                    os.remove(temporary_path)
-                except FileNotFoundError:
-                    pass
-            etags[full_path] = headers_dict[b'etag'].decode()
+                    mode = int(response.headers['x-amz-meta-mode'])
+                except (KeyError, ValueError):
+                    mode = None
+
+                is_symlink = mode and stat.S_ISLNK(mode)
+
+                if is_directory:
+                    await buffered(response.aiter_bytes())
+
+                    if is_dir_pull_blocked(full_path):
+                        logger.debug('Recently changed locally, not changing: %s', full_path)
+                        return
+
+                    os.utime(full_path, (modified, modified))
+                    etags[full_path] = response.headers['etag']
+
+                    # Ensure that subsequent renames will attempt to move the directory
+                    ensure_dir_in_tree_cache(full_path)
+                    return
+
+                temporary_path = directory / download_directory / uuid.uuid4().hex
+                try:
+                    if not is_symlink:
+                        with open(temporary_path, 'wb') as file:
+                            async for chunk in response.aiter_bytes():
+                                file.write(chunk)
+                    else:
+                        symlink_points_to = await buffered(response.aiter_bytes())
+                        os.symlink(symlink_points_to, temporary_path)
+
+                    # May raise a FileNotFoundError if the directory no longer
+                    # exists, but handled at higher level
+                    os.utime(temporary_path, (modified, modified), follow_symlinks=False)
+
+                    # This is skipped when the file being downloaded is a symlink because it
+                    # will fail if the symlink is processed before the file it points to exists.
+                    # Permissions on symlinks in Linux are always 777 anyway as it defers to
+                    # the permissions of the underlying file
+                    if mode is not None and not is_symlink:
+                        os.chmod(temporary_path, mode)
+
+                    # If we don't wait for the directory watched, then if
+                    # - a directory has just been created above
+                    # - a download that doesn't yield (enough) for the create
+                    #   directory eveny to have been processed
+                    # once the IN_CREATE event for the directory is processed it
+                    # would discover the file and re-upload
+                    await wait_for_directory_watched(full_path)
+
+                    try:
+                        await flush_events(logger, full_path)
+                    except FileNotFoundError:
+                        # The folder doesn't exist, so moving into place will fail
+                        return
+
+                    if is_pull_blocked(full_path):
+                        logger.debug('Recently changed locally, not changing: %s', full_path)
+                        return
+
+                    os.replace(temporary_path, full_path)
+
+                    meta[full_path] = (
+                        (b'x-amz-meta-mtime', modified),
+                        (b'x-amz-meta-mode', mode),
+                    )
+
+                    # Ensure that once we move the file into place, subsequent
+                    # renames will attempt to move the file
+                    ensure_file_in_tree_cache(full_path)
+                finally:
+                    try:
+                        os.remove(temporary_path)
+                    except FileNotFoundError:
+                        pass
+                etags[full_path] = response.headers['etag']
 
         download_job_queue.put_nowait((logger, download))
 
@@ -1225,13 +1301,12 @@ def Syncer(
                 ('list-type', '2'),
                 ('prefix', prefix),
             ) + extra_query_items
-            code, _, body = await signed_request(logger, b'GET', bucket_url, params=query)
-            body_bytes = await buffered(body)
-            if code != b'200':
-                raise Exception(code, body_bytes)
+            response = await client.request(b'GET', bucket_url, params=query, auth=auth)
+            if response.status_code != 200:
+                raise Exception(response.status_code, response.content)
 
             namespace = '{http://s3.amazonaws.com/doc/2006-03-01/}'
-            root = ET.fromstring(body_bytes)
+            root = ET.fromstring(response.content)
             next_token = ''
             keys_relative = []
             for element in root:
@@ -1380,10 +1455,6 @@ def main():
         metavar='',
         nargs='?', const=True, default=False)
     parser.add_argument(
-        '--disable-0x20-dns-encoding',
-        metavar='',
-        nargs='?', const=True, default=False)
-    parser.add_argument(
         '--log-level',
         metavar='',
         nargs='?', const=True, default='WARNING')
@@ -1396,21 +1467,13 @@ def main():
     logger.setLevel(parsed_args.log_level)
     logger.addHandler(stdout_handler)
 
-    async def transform_fqdn_no_0x20_encoding(fqdn):
-        return fqdn
-
     def get_ssl_context_without_verifcation():
-        ssl_context = ssl.SSLContext()
+        ssl_context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
         return ssl_context
 
     pool_args = {
-        **({
-            'get_dns_resolver': lambda **kwargs: Resolver(**{
-                **kwargs,
-                'transform_fqdn': transform_fqdn_no_0x20_encoding,
-            }),
-        } if parsed_args.disable_0x20_dns_encoding else {}),
         **({
             'get_ssl_context': get_ssl_context_without_verifcation,
         } if parsed_args.disable_ssl_verification else {}),
@@ -1432,7 +1495,7 @@ def main():
             get_credentials_from_ecs_endpoint()
     }
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
     cleanup = loop.run_until_complete(async_main(syncer_args))
 
     async def cleanup_then_stop():
