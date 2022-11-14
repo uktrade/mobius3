@@ -1198,125 +1198,126 @@ def Syncer(
             logger.info('Downloading: %s', full_path)
 
             code, headers, body = await signed_request(logger, b'GET', bucket_url + prefix + path)
-            if code != 200:
-                await buffered(body)  # Fetch all bytes and return to pool
-                raise Exception(code)
+            if True:  # To add a layer if indentation temporarily split a large diff
+                if code != 200:
+                    await buffered(body)  # Fetch all bytes and return to pool
+                    raise Exception(code)
 
-            is_directory = path[-1] == '/'
+                is_directory = path[-1] == '/'
 
-            directory_to_ensure_created = \
-                full_path if is_directory else \
-                full_path.parent
+                directory_to_ensure_created = \
+                    full_path if is_directory else \
+                    full_path.parent
 
-            # Create directories under directory
-            directory_and_parents = [directory] + list(directory.parents)
-            directory_to_ensure_created_and_paraents = list(
-                reversed(directory_to_ensure_created.parents)) + [directory_to_ensure_created]
-            directories_to_ensure_created_under_directory = [
-                _dir
-                for _dir in directory_to_ensure_created_and_paraents
-                if _dir not in directory_and_parents
-            ]
-            for _dir in directories_to_ensure_created_under_directory:
+                # Create directories under directory
+                directory_and_parents = [directory] + list(directory.parents)
+                directory_to_ensure_created_and_paraents = list(
+                    reversed(directory_to_ensure_created.parents)) + [directory_to_ensure_created]
+                directories_to_ensure_created_under_directory = [
+                    _dir
+                    for _dir in directory_to_ensure_created_and_paraents
+                    if _dir not in directory_and_parents
+                ]
+                for _dir in directories_to_ensure_created_under_directory:
 
-                # If we don't wait for the containing directory to be watched,
-                # then we might be incorrectly ignoring
-                await wait_for_directory_watched(_dir)
+                    # If we don't wait for the containing directory to be watched,
+                    # then we might be incorrectly ignoring
+                    await wait_for_directory_watched(_dir)
+
+                    try:
+                        os.mkdir(_dir)
+                    except FileExistsError:
+                        logger.debug('Already exists: %s', _dir)
+                    except NotADirectoryError:
+                        logger.debug('Not a directory: %s', _dir)
+                    except Exception:
+                        logger.debug('Unable to create directory: %s', _dir)
+                    else:
+                        ignore_next_directory_upload[_dir] = True
 
                 try:
-                    os.mkdir(_dir)
-                except FileExistsError:
-                    logger.debug('Already exists: %s', _dir)
-                except NotADirectoryError:
-                    logger.debug('Not a directory: %s', _dir)
-                except Exception:
-                    logger.debug('Unable to create directory: %s', _dir)
-                else:
-                    ignore_next_directory_upload[_dir] = True
+                    modified = float(headers['x-amz-meta-mtime'])
+                except (KeyError, ValueError):
+                    modified = datetime.datetime.strptime(
+                        headers['last-modified'],
+                        '%a, %d %b %Y %H:%M:%S %Z').timestamp()
 
-            try:
-                modified = float(headers['x-amz-meta-mtime'])
-            except (KeyError, ValueError):
-                modified = datetime.datetime.strptime(
-                    headers['last-modified'],
-                    '%a, %d %b %Y %H:%M:%S %Z').timestamp()
+                try:
+                    mode = int(headers['x-amz-meta-mode'])
+                except (KeyError, ValueError):
+                    mode = None
 
-            try:
-                mode = int(headers['x-amz-meta-mode'])
-            except (KeyError, ValueError):
-                mode = None
+                is_symlink = mode and stat.S_ISLNK(mode)
 
-            is_symlink = mode and stat.S_ISLNK(mode)
+                if is_directory:
+                    await buffered(body)
 
-            if is_directory:
-                await buffered(body)
+                    if is_dir_pull_blocked(full_path):
+                        logger.debug('Recently changed locally, not changing: %s', full_path)
+                        return
 
-                if is_dir_pull_blocked(full_path):
-                    logger.debug('Recently changed locally, not changing: %s', full_path)
+                    os.utime(full_path, (modified, modified))
+                    etags[full_path] = headers['etag']
+
+                    # Ensure that subsequent renames will attempt to move the directory
+                    ensure_dir_in_tree_cache(full_path)
                     return
 
-                os.utime(full_path, (modified, modified))
+                temporary_path = directory / download_directory / uuid.uuid4().hex
+                try:
+                    if not is_symlink:
+                        with open(temporary_path, 'wb') as file:
+                            async for chunk in body:
+                                file.write(chunk)
+                    else:
+                        symlink_points_to = await buffered(body)
+                        os.symlink(symlink_points_to, temporary_path)
+
+                    # May raise a FileNotFoundError if the directory no longer
+                    # exists, but handled at higher level
+                    os.utime(temporary_path, (modified, modified), follow_symlinks=False)
+
+                    # This is skipped when the file being downloaded is a symlink because it
+                    # will fail if the symlink is processed before the file it points to exists.
+                    # Permissions on symlinks in Linux are always 777 anyway as it defers to
+                    # the permissions of the underlying file
+                    if mode is not None and not is_symlink:
+                        os.chmod(temporary_path, mode)
+
+                    # If we don't wait for the directory watched, then if
+                    # - a directory has just been created above
+                    # - a download that doesn't yield (enough) for the create
+                    #   directory eveny to have been processed
+                    # once the IN_CREATE event for the directory is processed it
+                    # would discover the file and re-upload
+                    await wait_for_directory_watched(full_path)
+
+                    try:
+                        await flush_events(logger, full_path)
+                    except FileNotFoundError:
+                        # The folder doesn't exist, so moving into place will fail
+                        return
+
+                    if is_pull_blocked(full_path):
+                        logger.debug('Recently changed locally, not changing: %s', full_path)
+                        return
+
+                    os.replace(temporary_path, full_path)
+
+                    meta[full_path] = (
+                        (b'x-amz-meta-mtime', modified),
+                        (b'x-amz-meta-mode', mode),
+                    )
+
+                    # Ensure that once we move the file into place, subsequent
+                    # renames will attempt to move the file
+                    ensure_file_in_tree_cache(full_path)
+                finally:
+                    try:
+                        os.remove(temporary_path)
+                    except FileNotFoundError:
+                        pass
                 etags[full_path] = headers['etag']
-
-                # Ensure that subsequent renames will attempt to move the directory
-                ensure_dir_in_tree_cache(full_path)
-                return
-
-            temporary_path = directory / download_directory / uuid.uuid4().hex
-            try:
-                if not is_symlink:
-                    with open(temporary_path, 'wb') as file:
-                        async for chunk in body:
-                            file.write(chunk)
-                else:
-                    symlink_points_to = await buffered(body)
-                    os.symlink(symlink_points_to, temporary_path)
-
-                # May raise a FileNotFoundError if the directory no longer
-                # exists, but handled at higher level
-                os.utime(temporary_path, (modified, modified), follow_symlinks=False)
-
-                # This is skipped when the file being downloaded is a symlink because it
-                # will fail if the symlink is processed before the file it points to exists.
-                # Permissions on symlinks in Linux are always 777 anyway as it defers to
-                # the permissions of the underlying file
-                if mode is not None and not is_symlink:
-                    os.chmod(temporary_path, mode)
-
-                # If we don't wait for the directory watched, then if
-                # - a directory has just been created above
-                # - a download that doesn't yield (enough) for the create
-                #   directory eveny to have been processed
-                # once the IN_CREATE event for the directory is processed it
-                # would discover the file and re-upload
-                await wait_for_directory_watched(full_path)
-
-                try:
-                    await flush_events(logger, full_path)
-                except FileNotFoundError:
-                    # The folder doesn't exist, so moving into place will fail
-                    return
-
-                if is_pull_blocked(full_path):
-                    logger.debug('Recently changed locally, not changing: %s', full_path)
-                    return
-
-                os.replace(temporary_path, full_path)
-
-                meta[full_path] = (
-                    (b'x-amz-meta-mtime', modified),
-                    (b'x-amz-meta-mode', mode),
-                )
-
-                # Ensure that once we move the file into place, subsequent
-                # renames will attempt to move the file
-                ensure_file_in_tree_cache(full_path)
-            finally:
-                try:
-                    os.remove(temporary_path)
-                except FileNotFoundError:
-                    pass
-            etags[full_path] = headers['etag']
 
         download_job_queue.put_nowait((logger, download))
 
