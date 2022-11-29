@@ -175,7 +175,7 @@ def Pool(
     logger = get_logger_adapter({})
 
     async def log_request(request):
-        logger.info('[http] Request: %s', request.method, request.url)
+        logger.info('[http] Request: %s %s', request.method, request.url)
 
     async def log_response(response):
         logger.info('[http] Response: %s %s %s', response.request.method, response.request.url, response.status_code)
