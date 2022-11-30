@@ -170,6 +170,7 @@ def timeout(loop, max_time):
 def Pool(
         get_ssl_context=ssl.create_default_context,
         get_logger_adapter=get_logger_adapter_default,
+        force_ipv4=False,
     ):
 
     logger = get_logger_adapter({})
@@ -181,7 +182,12 @@ def Pool(
         logger.info('[http] Response: %s %s %s', response.request.method, response.request.url, response.status_code)
 
     return httpx.AsyncClient(
-        timeout=10.0, transport=httpx.AsyncHTTPTransport(retries=3, verify=get_ssl_context()),
+        timeout=10.0,
+        transport=httpx.AsyncHTTPTransport(
+            retries=3,
+            verify=get_ssl_context(),
+            local_address="0.0.0.0" if force_ipv4 else None,
+        ),
         event_hooks={'request': [log_request], 'response': [log_response]}
     )
 
@@ -1458,6 +1464,10 @@ def main():
         '--log-level',
         metavar='',
         nargs='?', const=True, default='WARNING')
+    parser.add_argument(
+        '--force-ipv4',
+        metavar='',
+        nargs='?', const=False, default=False)
 
     parsed_args = parser.parse_args()
 
@@ -1474,6 +1484,7 @@ def main():
         return ssl_context
 
     pool_args = {
+        'force_ipv4': parsed_args.force_ipv4,
         **({
             'get_ssl_context': get_ssl_context_without_verifcation,
         } if parsed_args.disable_ssl_verification else {}),
