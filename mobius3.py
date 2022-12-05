@@ -1506,6 +1506,16 @@ def main():
             get_credentials_from_ecs_endpoint()
     }
 
+    if os.environ.get("SENTRY_DSN") is not None:
+        import sentry_sdk
+        from sentry_sdk.integrations.httpx import HttpxIntegration
+
+        sentry_sdk.init(
+            dsn=os.environ["SENTRY_DSN"],
+            integrations=[HttpxIntegration()],
+            environment=os.environ.get("SENTRY_ENVIRONMENT"),
+        )
+
     loop = asyncio.new_event_loop()
     cleanup = loop.run_until_complete(async_main(syncer_args))
 
