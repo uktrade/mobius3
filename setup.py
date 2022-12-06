@@ -31,6 +31,7 @@ setuptools.setup(
     test_suite='test',
     tests_require=[
         'aiohttp==3.*',
+        'sentry-sdk>=1.11.1'
     ],
     entry_points={
         'console_scripts': [

@@ -38,6 +38,9 @@ from fifolock import (
     FifoLock,
 )
 
+import sentry_sdk
+from sentry_sdk.integrations.httpx import HttpxIntegration
+
 
 libc = ctypes.CDLL('libc.so.6', use_errno=True)
 libc.inotify_init.argtypes = []
@@ -1507,9 +1510,6 @@ def main():
     }
 
     if os.environ.get("SENTRY_DSN") is not None:
-        import sentry_sdk
-        from sentry_sdk.integrations.httpx import HttpxIntegration
-
         sentry_sdk.init(
             dsn=os.environ["SENTRY_DSN"],
             integrations=[HttpxIntegration()],
