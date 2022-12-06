@@ -38,6 +38,9 @@ from fifolock import (
     FifoLock,
 )
 
+import sentry_sdk
+from sentry_sdk.integrations.httpx import HttpxIntegration
+
 
 libc = ctypes.CDLL('libc.so.6', use_errno=True)
 libc.inotify_init.argtypes = []
@@ -1505,6 +1508,13 @@ def main():
             get_credentials_from_environment if creds_source == 'envrionment-variables' else
             get_credentials_from_ecs_endpoint()
     }
+
+    if os.environ.get("SENTRY_DSN") is not None:
+        sentry_sdk.init(
+            dsn=os.environ["SENTRY_DSN"],
+            integrations=[HttpxIntegration()],
+            environment=os.environ.get("SENTRY_ENVIRONMENT"),
+        )
 
     loop = asyncio.new_event_loop()
     cleanup = loop.run_until_complete(async_main(syncer_args))

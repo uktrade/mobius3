@@ -8,7 +8,7 @@ def long_description():
 
 setuptools.setup(
     name='mobius3',
-    version='0.0.38',
+    version='0.0.39',
     author='Department for International Trade',
     author_email='webops@digital.trade.gov.uk',
     description='Continuously and asynchronously sync a local folder to an S3 bucket',
@@ -26,10 +26,12 @@ setuptools.setup(
     install_requires=[
         'fifolock>=0.0.20',
         'httpx>=0.23.0',
+        'sentry-sdk>=1.11.1'
     ],
     test_suite='test',
     tests_require=[
         'aiohttp==3.*',
+        'sentry-sdk>=1.11.1'
     ],
     entry_points={
         'console_scripts': [
