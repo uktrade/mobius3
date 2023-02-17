@@ -1304,11 +1304,15 @@ def Syncer(
         download_job_queue.put_nowait((logger, download))
 
     async def list_keys_relative_to_prefix(logger):
+        async for key in list_keys(logger, prefix):
+            yield key
+
+    async def list_keys(logger, bucket_prefix):
         async def _list(extra_query_items=()):
             query = (
                 ('max-keys', '1000'),
                 ('list-type', '2'),
-                ('prefix', prefix),
+                ('prefix', bucket_prefix),
             ) + extra_query_items
             response = await client.request(b'GET', bucket_url, params=query, auth=auth)
             if response.status_code != 200:
@@ -1321,7 +1325,7 @@ def Syncer(
             for element in root:
                 if element.tag == f'{namespace}Contents':
                     key = first_child_text(element, f'{namespace}Key')
-                    key_relative = key[len(prefix):]
+                    key_relative = key[len(bucket_prefix):]
                     if key_relative == '':
                         # Don't include the prefix itself, if it exists
                         continue
