@@ -1101,6 +1101,11 @@ def Syncer(
         await download_job_queue.join()
 
         full_paths = set(directory / path for path, _ in path_etags)
+        full_paths_all_parents = set(
+            parent
+            for path, _ in path_etags
+            for parent in (directory / path).parents
+        )
         for root, dirs, files in os.walk(directory, topdown=False):
             for file in files:
                 full_path = PurePosixPath(root) / file
@@ -1145,6 +1150,7 @@ def Syncer(
                 if (
                         exclude_local.match(str(full_path)) or
                         full_path in full_paths or
+                        full_path in full_paths_all_parents or
                         is_dir_pull_blocked(full_path) or
                         full_path == directory / download_directory
                 ):
