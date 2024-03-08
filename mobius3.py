@@ -20,6 +20,7 @@ import signal
 import ssl
 import stat
 import sys
+import time
 import uuid
 import urllib.parse
 from pathlib import (
@@ -482,6 +483,7 @@ def Syncer(
         nonlocal upload_tasks
         nonlocal download_tasks
         nonlocal download_manager_task
+        start_time = time.monotonic()
         try:
             os.mkdir(directory / download_directory)
         except FileExistsError:
@@ -499,7 +501,8 @@ def Syncer(
         download_manager_task = asyncio.create_task(
             download_manager(get_logger_adapter({'mobius3_component': 'download'}))
         )
-        logger.info('Finished starting')
+        end_time = time.monotonic()
+        logger.info('Finished starting: %s seconds', end_time - start_time)
 
     def start_inotify(logger, upload):
         nonlocal wds_to_path
