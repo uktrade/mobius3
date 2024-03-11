@@ -30,6 +30,7 @@ setuptools.setup(
     ],
     test_suite='test',
     tests_require=[
+        'moto[proxy]>=5.0.3',
         'aiohttp==3.*',
         'sentry-sdk>=1.11.1'
     ],
