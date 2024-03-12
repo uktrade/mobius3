@@ -8,6 +8,7 @@ ENV \
 RUN \
 	apk add --no-cache \
 		build-base \
+		libffi-dev \
 		py3-pip \
 		python3 \
 		python3-dev && \
