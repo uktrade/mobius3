@@ -324,6 +324,8 @@ def Syncer(
         exclude_remote=r'^$',
         exclude_local=r'^$',
         upload_on_create=r'^$',
+        cloudwatch_monitoring_endpoint='',
+        cloudwatch_monitoring_region='',
 ):
 
     loop = asyncio.get_running_loop()
@@ -1468,6 +1470,20 @@ def main():
         default='^$',
         nargs='?',
         help='Regex of paths to upload as soon as they have been created')
+
+    parser.add_argument(
+        '--cloudwatch-monitoring-endpoint',
+        metavar='cloudwatch-monitoring-endpoint',
+        default='',
+        nargs='?',
+        help='The endpoint of for CloudWatch monitoring for metrics to be posted to')
+    parser.add_argument(
+        '--cloudwatch-monitoring-region',
+        metavar='cloudwatch-monitoring-region',
+        default='',
+        nargs='?',
+        help='The endpoint of for CloudWatch monitoring for metrics to be posted to')
+
     parser.add_argument(
         '--disable-ssl-verification',
         metavar='',
@@ -1512,6 +1528,8 @@ def main():
         'exclude_remote': parsed_args.exclude_remote,
         'exclude_local': parsed_args.exclude_local,
         'upload_on_create': parsed_args.upload_on_create,
+        'cloudwatch_monitoring_endpoint': parsed_args.cloudwatch_monitoring_endpoint,
+        'cloudwatch_monitoring_region': parsed_args.cloudwatch_monitoring_region,
         'get_pool': lambda: Pool(**pool_args),
         'get_credentials':
             get_credentials_from_environment if creds_source == 'envrionment-variables' else
