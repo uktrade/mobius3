@@ -50,6 +50,9 @@ services:
       - "3000:3000"
     environment:
       - MOTO_PORT=3000
+    networks:
+      ecs_emulation:
+        ipv4_address: '169.254.170.5'
 
   ecs-credentials-endpoint:
     build:
