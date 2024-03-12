@@ -24,6 +24,7 @@ services:
         ipv4_address: '169.254.170.3'
     depends_on:
       - minio
+      - motoserver
       - ecs-credentials-endpoint
   minio:
     build:
@@ -42,6 +43,13 @@ services:
     networks:
       ecs_emulation:
         ipv4_address: '169.254.170.4'
+
+  motoserver:
+    image: motoserver/moto:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - MOTO_PORT=3000
 
   ecs-credentials-endpoint:
     build:
