@@ -133,6 +133,6 @@ Some of the above behaviours may change in future versions.
 ## Running tests
 
 ```bash
-docker-compose build && \
-docker-compose run --rm test python3 setup.py test
+docker compose build && \
+docker compose run --rm test python3 -m unittest
 ```
