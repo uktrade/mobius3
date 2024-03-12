@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mobius3"
+version = "0.0.41"
+authors = [
+  { name="Department for Business and Trade", email="sre@digital.trade.gov.uk" },
+]
+description = "Continuously and asynchronously sync a local folder to an S3 bucket"
+readme = "README.md"
+requires-python = ">=3.7.0"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    'fifolock>=0.0.20',
+    'httpx>=0.23.0',
+    'sentry-sdk>=1.11.1',
+]
+
+[project.optional-dependencies]
+dev = [
+    'aiohttp==3.*',
+    'sentry-sdk>=1.11.1',
+]
+
+[project.urls]
+"Source" = "https://github.com/uktrade/mobius3"
+
+[tool.hatch.build]
+include = [
+  "mobius3.py",
+]
+
+[project.scripts]
+mobius3 = "mobius3:main"

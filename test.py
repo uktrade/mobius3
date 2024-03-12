@@ -2291,10 +2291,6 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
         delete_bucket_dir = create_directory('/test-data/my-bucket')
         self.addAsyncCleanup(delete_bucket_dir)
 
-        install_mobius3 = await asyncio.create_subprocess_exec('python3', 'setup.py', 'develop')
-        self.addAsyncCleanup(terminate, install_mobius3)
-        await install_mobius3.wait()
-
         mobius3_process = await asyncio.create_subprocess_exec(
             'mobius3', '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
             '--disable-ssl-verification',
