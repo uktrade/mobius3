@@ -25,6 +25,7 @@ dependencies = [
 dev = [
     'aiohttp==3.*',
     'sentry-sdk>=1.11.1',
+    'moto[proxy]>=5.0.3'
 ]
 
 [project.urls]
