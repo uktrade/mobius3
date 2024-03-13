@@ -324,6 +324,9 @@ def Syncer(
         exclude_remote=r'^$',
         exclude_local=r'^$',
         upload_on_create=r'^$',
+        cloudwatch_monitoring_endpoint='',
+        cloudwatch_monitoring_region='',
+        cloudwatch_monitoring_namespace='',
 ):
 
     loop = asyncio.get_running_loop()
@@ -503,6 +506,18 @@ def Syncer(
         )
         end_time = time.monotonic()
         logger.info('Finished starting: %s seconds', end_time - start_time)
+        if cloudwatch_monitoring_endpoint and cloudwatch_monitoring_region and cloudwatch_monitoring_namespace:
+            logger.info('Posting startup time to %s in region %s in namespace %s', cloudwatch_monitoring_endpoint, cloudwatch_monitoring_region, cloudwatch_monitoring_namespace)
+            cloudwatch_auth = AWSAuth(service='monitoring', region=cloudwatch_monitoring_region, client=client, get_credentials=get_credentials)
+            response = await client.post(cloudwatch_monitoring_endpoint, params=(
+                ('Version', '2010-08-01'),
+                ('Action', 'PutMetricData'),
+                ('Namespace', cloudwatch_monitoring_namespace),
+                ('MetricData.member.1.MetricName', 'StartupSyncTime'),
+                ('MetricData.member.1.Unit', 'Seconds'),
+                ('MetricData.member.1.Value', str(end_time - start_time)),
+            ), auth=cloudwatch_auth)
+            response.raise_for_status()
 
     def start_inotify(logger, upload):
         nonlocal wds_to_path
@@ -1468,6 +1483,25 @@ def main():
         default='^$',
         nargs='?',
         help='Regex of paths to upload as soon as they have been created')
+
+    parser.add_argument(
+        '--cloudwatch-monitoring-endpoint',
+        metavar='cloudwatch-monitoring-endpoint',
+        default='',
+        nargs='?',
+        help='The endpoint of for CloudWatch monitoring for metrics to be posted to')
+    parser.add_argument(
+        '--cloudwatch-monitoring-region',
+        metavar='cloudwatch-monitoring-region',
+        default='',
+        nargs='?',
+        help='The endpoint of for CloudWatch monitoring for metrics to be posted to')
+    parser.add_argument(
+        '--cloudwatch-monitoring-namespace',
+        metavar='cloudwatch-monitoring-namespace',
+        default='',
+        nargs='?',
+        help='The namespace for CloudWatch monitoring metrics')
     parser.add_argument(
         '--disable-ssl-verification',
         metavar='',
@@ -1512,6 +1546,9 @@ def main():
         'exclude_remote': parsed_args.exclude_remote,
         'exclude_local': parsed_args.exclude_local,
         'upload_on_create': parsed_args.upload_on_create,
+        'cloudwatch_monitoring_endpoint': parsed_args.cloudwatch_monitoring_endpoint,
+        'cloudwatch_monitoring_region': parsed_args.cloudwatch_monitoring_region,
+        'cloudwatch_monitoring_namespace': parsed_args.cloudwatch_monitoring_namespace,
         'get_pool': lambda: Pool(**pool_args),
         'get_credentials':
             get_credentials_from_environment if creds_source == 'envrionment-variables' else

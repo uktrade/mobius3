@@ -2293,6 +2293,9 @@ class TestEndToEnd(unittest.IsolatedAsyncioTestCase):
 
         mobius3_process = await asyncio.create_subprocess_exec(
             'mobius3', '/s3-home-folder', 'my-bucket', 'https://minio:9000/{}/', 'us-east-1',
+            '--cloudwatch-monitoring-endpoint', 'http://motoserver:3000/',
+            '--cloudwatch-monitoring-region', 'us-east-1',
+            '--cloudwatch-monitoring-namespace', 'MyApp/Testing',
             '--disable-ssl-verification',
             env=os.environ, stdout=asyncio.subprocess.PIPE,
         )
@@ -2544,6 +2547,9 @@ def syncer_for(path, bucket='my-bucket', prefix='',
         exclude_remote=exclude_remote,
         exclude_local=exclude_local,
         upload_on_create=upload_on_create,
+        cloudwatch_monitoring_endpoint='http://motoserver:3000/',
+        cloudwatch_monitoring_region='us-east-1',
+        cloudwatch_monitoring_namespace='MyApp/Testing',
     )
 
 
