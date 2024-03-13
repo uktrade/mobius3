@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mobius3"
-version = "0.0.41"
+version = "0.0.0.dev0"
 authors = [
   { name="Department for Business and Trade", email="sre@digital.trade.gov.uk" },
 ]
