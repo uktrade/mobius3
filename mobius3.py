@@ -291,7 +291,7 @@ def get_credentials_from_ecs_endpoint():
 
         if now > expiration:
             response = await client.request(
-                b'GET',
+                'GET',
                 'http://169.254.170.2' + os.environ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI']
             )
             creds = json.loads(response.content)
@@ -978,7 +978,7 @@ def Syncer(
             set_etag(path, headers)
 
         await locked_request(
-            logger, b'PUT', path, file_key_for_path(path), content=content,
+            logger, 'PUT', path, file_key_for_path(path), content=content,
             get_headers=lambda: (
                 ('content-length', content_length),
             ) + data,
@@ -1007,7 +1007,7 @@ def Syncer(
 
         key = file_key_for_path(path)
         await locked_request(
-            logger, b'PUT', path, key,
+            logger, 'PUT', path, key,
             cont=lambda: meta[path] != data,
             get_headers=lambda: data + (
                 ('x-amz-copy-source', f'/{bucket}/{key}'),
@@ -1026,7 +1026,7 @@ def Syncer(
             raise FileContentChanged(path)
 
         await locked_request(
-            logger, b'PUT', path, dir_key_for_path(path),
+            logger, 'PUT', path, dir_key_for_path(path),
             get_headers=lambda: (
                 ('content-length', '0'),
                 ('x-amz-meta-mtime', mtime),
@@ -1050,7 +1050,7 @@ def Syncer(
         if content_version_current != content_version_original:
             raise FileContentChanged(path)
 
-        await locked_request(logger, b'DELETE', path, file_key_for_path(path))
+        await locked_request(logger, 'DELETE', path, file_key_for_path(path))
 
     async def delete_directory(logger, path):
         logger.info('Deleting directory %s', path)
@@ -1058,7 +1058,7 @@ def Syncer(
         if os.path.isdir(path):
             raise FileContentChanged(path)
 
-        await locked_request(logger, b'DELETE', path, dir_key_for_path(path))
+        await locked_request(logger, 'DELETE', path, dir_key_for_path(path))
 
     def file_key_for_path(path):
         return prefix + str(path.relative_to(directory))
@@ -1077,7 +1077,7 @@ def Syncer(
                 return
             remote_url = bucket_url + key
             headers = get_headers()
-            logger.debug('%s %s %s', method.decode(), remote_url, headers)
+            logger.debug('%s %s %s', method, remote_url, headers)
             response = await client.request(method, remote_url, headers=get_headers(), content=content, auth=auth)
             logger.debug('%s %s', response.status_code, response.headers)
 
@@ -1138,7 +1138,7 @@ def Syncer(
                 # Since walking the filesystem can take time we might have a new file that we have
                 # recently uploaded that was not present when we request the original file list.
                 path = full_path.relative_to(directory)
-                response = await client.request(b'HEAD', bucket_url + prefix + str(path), auth=auth)
+                response = await client.request('HEAD', bucket_url + prefix + str(path), auth=auth)
                 if response.status_code != 404:
                     continue
 
@@ -1175,7 +1175,7 @@ def Syncer(
                     continue
 
                 path = full_path.relative_to(directory)
-                response = await client.request(b'HEAD', bucket_url + prefix + str(path) + '/', auth=auth)
+                response = await client.request('HEAD', bucket_url + prefix + str(path) + '/', auth=auth)
                 if response.status_code != 404:
                     continue
 
@@ -1204,7 +1204,7 @@ def Syncer(
 
             logger.info('Downloading: %s', full_path)
 
-            async with client.stream(b'GET', bucket_url + prefix + path, auth=auth) as response:
+            async with client.stream('GET', bucket_url + prefix + path, auth=auth) as response:
                 if response.status_code != 200:
                     await buffered(response.aiter_bytes())  # Fetch all bytes and return to pool
                     raise Exception(response.status_code)
@@ -1334,7 +1334,7 @@ def Syncer(
                 ('list-type', '2'),
                 ('prefix', prefix),
             ) + extra_query_items
-            response = await client.request(b'GET', bucket_url, params=query, auth=auth)
+            response = await client.request('GET', bucket_url, params=query, auth=auth)
             if response.status_code != 200:
                 raise Exception(response.status_code, response.content)
 

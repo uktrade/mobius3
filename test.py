@@ -2570,13 +2570,13 @@ async def get_credentials_from_environment(_):
 
 
 async def object_response(client, key, bucket='my-bucket'):
-    return await client.request(b'GET', f'https://minio:9000/{bucket}/{key}', auth=AWSAuth(
+    return await client.request('GET', f'https://minio:9000/{bucket}/{key}', auth=AWSAuth(
         service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment
     ))
 
 
 async def delete_object(client, key):
-    return await client.request(b'DELETE', f'https://minio:9000/my-bucket/{key}', auth=AWSAuth(
+    return await client.request('DELETE', f'https://minio:9000/my-bucket/{key}', auth=AWSAuth(
         service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment
     ))
 
@@ -2587,7 +2587,7 @@ async def put_body(client, key, body):
         service='s3', region='us-east-1', client=client, get_credentials=get_credentials_from_environment,
         content_hash=content_hash
     )
-    return await client.request(b'PUT', f'https://minio:9000/my-bucket/{key}', headers=(
+    return await client.request('PUT', f'https://minio:9000/my-bucket/{key}', headers=(
         ('content-length', str(len(body))),
     ), content=hashed_content, auth=auth)
 
@@ -2637,7 +2637,7 @@ async def set_temporary_creds(client):
     content_hash, hashed_content = get_content_hash(request_body_bytes)
     auth = AWSAuth(service='sts', region='us-east-1', client=client, get_credentials=new_user_creds, content_hash=content_hash)
     response = await client.request(
-        b'POST', 'https://minio:9000/',
+        'POST', 'https://minio:9000/',
         headers=(
             ('content-type', 'application/x-www-form-urlencoded; charset=utf-8'),
             ('content-length', str(len(request_body_bytes))),
@@ -2658,7 +2658,7 @@ async def set_temporary_creds(client):
 
     request_content_bytes = json.dumps(creds).encode('utf-8')
     await client.request(
-        b'POST', 'http://169.254.170.2/creds', content=streamed(request_content_bytes), headers=(
+        'POST', 'http://169.254.170.2/creds', content=streamed(request_content_bytes), headers=(
             ('content-length', str(len(request_content_bytes))),
         ))
     return creds
